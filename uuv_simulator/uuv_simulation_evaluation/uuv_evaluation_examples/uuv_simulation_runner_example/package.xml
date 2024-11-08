@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<package>
+  <name>uuv_simulation_runner_example</name>
+  <version>0.5.0</version>
+  <description>Source code the simulation runner tutorial</description>
+
+  <maintainer email="musa.marcusso@de.bosch.com">Musa Morena Marcusso Manhaes</maintainer>
+
+  <author email="musa.marcusso@de.bosch.com">Musa Morena Marcusso Manhaes</author>
+
+  <license>Apache-2.0</license>
+
+  <run_depend>uuv_simulation_evaluation</run_depend>
+  <run_depend>uuv_simulation_wrapper</run_depend>
+  <run_depend>uuv_descriptions</run_depend>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+</package>

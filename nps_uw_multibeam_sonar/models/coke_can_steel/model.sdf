@@ -1,0 +1,41 @@
+<?xml version="1.0" ?>
+<sdf version="1.6" xmlns:surface_props="https://github.com/Field-Robotics-Lab/dave">
+  <model name="coke_can_steel">
+    <link name="link">
+      <inertial>
+        <pose>0 0 0 0 0 0</pose>
+        <mass>1000.0</mass>
+        <inertia>
+          <ixx>0.083</ixx>
+          <ixy>0.0</ixy>
+          <ixz>0.0</ixz>
+          <iyy>0.083</iyy>
+          <iyz>0.0</iyz>
+          <izz>0.083</izz>
+        </inertia>
+      </inertial>
+      <collision name="collision">
+        <geometry>
+          <mesh>
+            <uri>model://coke_can_steel/meshes/coke_can.obj</uri>
+            <scale>2 2 2</scale>
+          </mesh>
+        </geometry>
+      </collision>
+      <visual name="visual">
+        <geometry>
+          <mesh>
+            <uri>model://coke_can_steel/meshes/coke_can.obj</uri>
+            <scale>2 2 2</scale>
+          </mesh>
+        </geometry>
+      </visual>
+    </link>
+    <!-- Custom SDF elements for surface properties -->
+    <surface_props:material>metal</surface_props:material>
+    <surface_props:biofouling_rating>0</surface_props:biofouling_rating>
+    <surface_props:roughness>0.0</surface_props:roughness>
+    <!-- <plugin name="custom_surface_properties"
+      filename="libcustom_surface_properties.so"/> -->
+  </model>
+</sdf>

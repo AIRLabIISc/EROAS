@@ -1,0 +1,92 @@
+#!/usr/bin/env python
+# Copyright (c) 2016 The UUV Simulator Authors.
+# All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+from __future__ import print_function
+import os
+import argparse
+import rospy
+import yaml
+import shutil
+from time import gmtime, strftime
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Create results folder')
+    parser.add_argument('--output_dir', type=str, default='.')
+    parser.add_argument('--input_dir', type=str, default='.')
+    parser.add_argument('--run_evaluation', type=bool, default=False)
+
+    # Parse input arguments
+    args = parser.parse_args(rospy.myargv()[1:])
+
+    assert None not in [args.input_dir, args.output_dir], 'Invalid input or output folders'
+    assert os.path.isdir(args.output_dir), 'Invalid output directory, dir=' + str(args.output_dir)
+    assert os.path.isdir(args.input_dir), 'Invalid input directory, dir=' + str(args.input_dir)
+
+    print('Input folder = ' + args.input_dir)
+    print('Output folder = ' + args.output_dir)
+
+    smac_folders = list()
+    other_files = list()
+    other_folders = list()
+
+    print(os.listdir(args.input_dir))
+    for item in os.listdir(args.input_dir):
+        if ('.yml' in item or '.txt' in item or '.pcs' in item or '.md' in item or '.json' in item) and \
+           os.path.isfile(os.path.join(args.input_dir, item)):
+            other_files.append(os.path.join(args.input_dir, item))
+            print('File found = ' + os.path.join(args.input_dir, item))
+        if 'smac3-output' in item and os.path.isdir(os.path.join(args.input_dir, item)):
+            smac_folders.append(os.path.join(args.input_dir, item))
+            print('Folder found = ' + smac_folders[-1])
+        if ('best_results' in item or 'mps_plots' in item) and os.path.isdir(os.path.join(args.input_dir, item)):
+            other_folders.append(os.path.join(args.input_dir, item))
+
+    assert len(smac_folders) > 0, 'No SMAC output folders found in directory ' + args.input_dir
+
+    datestr = strftime("%Y-%m-%d_%H:%M:%S", gmtime())
+    results_folder_prefix = 'results_' + datestr
+    results_folder_prefix = results_folder_prefix.replace(' ', '_')
+    results_folder_prefix = results_folder_prefix.replace(':', '-')
+
+    info_file = dict(name='<add name here>',
+                    date=strftime("%Y-%m-%d_%H:%M:%S", gmtime()),
+                    iterations='<add max. number of iterations used>',
+                    controller='<add name of the controller here>',
+                    description='<add description here>')
+
+    results_folder = os.path.join(args.output_dir, results_folder_prefix)
+    assert not os.path.isdir(results_folder), 'Results folder already exists!'
+
+    os.makedirs(results_folder)
+    print('Results folder created = ' + results_folder)
+
+    for i in range(len(smac_folders)):
+        smac_dir = smac_folders[i]
+        
+        for item in other_files:
+            shutil.copy(item, results_folder)
+
+        shutil.copytree(smac_dir, os.path.join(results_folder, os.path.basename(smac_dir)))
+
+        for item in other_folders:
+            if not os.path.isdir(os.path.join(results_folder, os.path.basename(item))):
+                shutil.copytree(item, os.path.join(results_folder, os.path.basename(item)))
+
+        with open(os.path.join(results_folder, 'info.yaml'), 'w') as info:
+            yaml.dump(info_file, info, default_flow_style=False)
+
+        #if args.run_evaluation:
+        #    os.system('rosrun uuv_smac_utils evaluate_smac_best_results --input_dir {} --output_dir {}'.format(results_folder, os.path.join(results_folder, 'best_results')))

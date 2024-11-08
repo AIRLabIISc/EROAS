@@ -1,0 +1,51 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <model name="falling_rock3">
+    <link name="base_link">
+      <inertial>
+        <pose>0.018197 0.019887 -0.018097 0 0 0</pose>
+        <mass>195.308</mass>
+        <inertia>
+          <ixx>6.48</ixx>
+          <ixy>0.224</ixy>
+          <ixz>-0.32</ixz>
+          <iyy>6.448</iyy>
+          <iyz>0.094</iyz>
+          <izz>6.604</izz>
+        </inertia>
+      </inertial>
+      <collision name="collision">
+        <geometry>
+          <mesh>
+            <uri>meshes/FallingRock03_Collider.dae</uri>
+          </mesh>
+        </geometry>
+      </collision>
+
+      <visual name="visual">
+        <geometry>
+          <mesh>
+            <uri>meshes/FallingRock03.dae</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <diffuse>1.0 1.0 1.0</diffuse>
+          <specular>1.0 1.0 1.0</specular>
+          <pbr>
+            <metal>
+              <albedo_map>model://falling_rock3/materials/textures/FallingRocks_Albedo.jpg</albedo_map>
+              <normal_map>model://falling_rock3/materials/textures/FallingRocks_Normal.jpg</normal_map>
+              <roughness_map>model://falling_rock3/materials/textures/FallingRocks_Roughness.jpg</roughness_map>
+            </metal>
+          </pbr>
+          <!-- fallback to script if no PBR support-->
+          <script>
+              <uri>model://falling_rock3/materials/scripts</uri>
+              <uri>model://falling_rock3/materials/textures</uri>
+              <name>FallingRocks/FallingRocks_Diffuse</name>
+          </script>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

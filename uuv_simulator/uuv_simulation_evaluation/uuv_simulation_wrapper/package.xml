@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package>
+  <name>uuv_simulation_wrapper</name>
+  <version>0.5.0</version>
+  <description>A wrapper function to run a Gazebo simulation scenario from Python applications</description>
+
+  <maintainer email="musa.marcusso@de.bosch.com">Musa Morena Marcusso Manhaes</maintainer>
+
+  <license>Apache-2.0</license>
+
+  <author email="musa.marcusso@de.bosch.com">Musa Morena Marcusso Manhaes</author>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <run_depend>rospy</run_depend>
+  <run_depend>std_msgs</run_depend>
+  <run_depend>python-yaml</run_depend>
+  <run_depend>python-psutil</run_depend>
+
+  <test_depend>rosunit</test_depend>
+</package>

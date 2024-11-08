@@ -1,0 +1,237 @@
+#!/usr/bin/env python
+# Copyright (c) 2016 The UUV Simulator Authors.
+# All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+from __future__ import print_function
+import rospy
+import os
+import signal
+import logging
+import subprocess
+import threading
+import psutil
+import argparse
+import sys
+from time import gmtime, strftime
+import random
+from rospkg import RosPack
+import roslib
+
+
+PKG = 'uuv_smac_utils'
+roslib.load_manifest(PKG)
+
+ROSPACK_INST = RosPack()
+
+SMAC_SCRIPT = os.path.join(ROSPACK_INST.get_path(PKG), 'scripts', 'smac')
+SMAC_WRAPPER = os.path.join(
+    ROSPACK_INST.get_path(PKG), 'scripts', 'smac_wrapper')
+PARAM_FILE = 'parameter_config.pcs'
+
+# Initializing LOGGER
+LOGGER = logging.getLogger('smac_wrapper')
+
+out_hdlr = logging.StreamHandler(sys.stdout)
+out_hdlr.setFormatter(logging.Formatter(
+    '%(asctime)s | %(levelname)s | %(module)s | %(message)s'))
+out_hdlr.setLevel(logging.INFO)
+LOGGER.addHandler(out_hdlr)
+LOGGER.setLevel(logging.INFO)
+
+if not os.path.isdir('logs'):
+    os.makedirs('logs')
+log_filename = os.path.join('logs', 'run_smac.log')
+
+file_hdlr = logging.FileHandler(log_filename)
+file_hdlr.setFormatter(logging.Formatter(
+    '%(asctime)s | %(levelname)s | %(module)s | %(message)s'))
+file_hdlr.setLevel(logging.INFO)
+
+LOGGER.addHandler(file_hdlr)
+LOGGER.setLevel(logging.INFO)
+
+
+def create_scenario_file(n, initial_incumbent='DEFAULT', param_file=PARAM_FILE):
+    datestr = strftime("%Y-%m-%d_%H:%M:%S", gmtime())
+    scenario_filename = 'scenario_%s_%d.txt' % (datestr,
+                                                random.randrange(0, 1e5, 1))
+    scenario_filename = scenario_filename.replace(':', '-')
+
+    LOGGER.info('Creating scenario configuration file, filename=%s',
+                scenario_filename)
+
+    with open(scenario_filename, 'w') as s_file:
+        s_file.write('algo = python %s\n' % SMAC_WRAPPER)
+        s_file.write('paramfile = %s\n' % param_file)
+        s_file.write('run_obj = quality\n')
+        s_file.write('runcount_limit = %d\n' % n)
+        s_file.write('deterministic = 1\n')
+        s_file.write('abort_on_first_run_crash = false\n')
+        s_file.write('intensification_percentage = 0.5\n')
+        s_file.write('initial_incumbent = %s\n' % initial_incumbent)
+
+    return scenario_filename
+
+
+class SMACProcess(threading.Thread):
+    def __init__(self, scenario_filename, mode, is_parallel=False, color='red',
+                 restore_state_folder=None):
+        threading.Thread.__init__(self)
+        self.color = color
+        self.proc = None
+
+        self.cmd = 'python3 ' + SMAC_SCRIPT
+        self.cmd += ' --scenario_file ' + scenario_filename
+        self.cmd += ' --verbose_level ' + mode
+        self.cmd += ' --seed %d' % random.randrange(0, 1e5, 1)
+
+        if is_parallel:            
+            self.cmd += ' --shared_model true'
+            self.cmd += ' --input_psmac_dirs smac3-output*/run_*'
+
+        if restore_state_folder is not None:
+            if os.path.isdir(restore_state_folder):
+                self.cmd += ' --restore_state %s' % restore_state_folder
+
+        signal.signal(signal.SIGTERM, self.signal_handler)
+        signal.signal(signal.SIGINT, self.signal_handler)
+
+    def finish(self):
+        if self.proc:
+            try:
+                LOGGER.info('Killing SMAC process...')
+                if psutil.pid_exists(self.proc.pid):
+                    LOGGER.warning('Sending SIGTERM signal to SMAC process')
+                    self.proc.send_signal(signal.SIGTERM)
+                    self.proc.join()
+                    LOGGER.warning('Done!')
+                else:
+                    LOGGER.warning('SMAC process has already been terminated')
+                LOGGER.info('SMAC process killed')
+            except Exception as ex:
+                LOGGER.error('Error killing process=%s', str(ex))
+
+    def signal_handler(self, signal, frame):
+        LOGGER.info('Signal received=%d', int(signal))
+        with open('UUV_TERMINATE', 'w+') as t_file:
+            t_file.write(strftime("%Y-%m-%d_%H:%M:%S", gmtime()))
+        self.finish()
+        sys.exit(0)
+
+    def run(self):
+        LOGGER.info('Start SMAC process, cmd=%s', self.cmd)
+        self.proc = subprocess.Popen(
+            self.cmd.split(), stdin=None, stdout=None, stderr=None,
+            universal_newlines=True)
+        returncode = self.proc.wait()
+        LOGGER.info('Return code=%d', int(returncode))
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Run the SMAC optimizer')    
+    parser.add_argument(
+        '--max_runs',
+        metavar='N',
+        type=int,
+        help='Max. number of simulation runs')
+    parser.add_argument(
+        '--debug',
+        metavar='DEBUG',
+        default=False,
+        type=bool,
+        help='Start SMAC in DEBUG mode')
+    parser.add_argument(
+        '--n_smacs',
+        metavar='N',
+        default=1,
+        type=int,
+        help='Number of parallel instances of SMAC')
+    parser.add_argument(
+        '--restore_state',
+        metavar='FOLDER',
+        default='',
+        type=str,
+        help='')
+    parser.add_argument(
+        '--initial_incumbent',
+        metavar='INITIAL_INC',
+        default='DEFAULT',
+        type=str,
+        help='DEFAULT to use the incumbent in the PCS file, RANDOM otherwise')
+    
+    # Parse input arguments
+    args = parser.parse_args(rospy.myargv()[1:])
+
+    assert args.max_runs > 0, 'Number of simulation runs must be greater than zero'    
+    assert args.initial_incumbent in ['DEFAULT', 'RANDOM']    
+
+    mode = ('DEBUG' if args.debug else 'INFO')
+
+    procs = list()
+
+    # Search for PCS files in the folder
+    pcs_files = list()
+    for item in os.listdir('.'):
+        if '.pcs' in item:
+            pcs_files.append(item)
+
+    assert len(pcs_files) == 1 or len(pcs_files) == args.n_smacs, 'Number of PCS files must be either 1 or equal to the number of SMAC instances'
+    LOGGER.info('PCS files found=' + str(pcs_files))
+
+    assert args.n_smacs > 0, 'Number of SMAC instances must be greater than zero'
+    if args.n_smacs > 1:
+        LOGGER.info('Number of SMAC instances = %d', args.n_smacs)
+        for n in range(args.n_smacs):
+            if len(pcs_files) == 1:
+                scenario_filename = create_scenario_file(
+                    args.max_runs, 
+                    args.initial_incumbent,
+                    pcs_files[0])
+            else:
+                scenario_filename = create_scenario_file(
+                    args.max_runs, 
+                    args.initial_incumbent,
+                    pcs_files[n])
+
+            LOGGER.info('#%d SMAC PROCESS' % n)
+            LOGGER.info('Scenario filename = %s' % scenario_filename)
+            restore_state_folder = None
+            if os.path.isdir(args.restore_state):
+                restore_state_folder = args.restore_state
+            procs.append(
+                SMACProcess(scenario_filename, mode, True))
+    else:
+        restore_state_folder = None
+        if os.path.isdir(args.restore_state):
+            restore_state_folder = args.restore_state
+
+        scenario_filename = create_scenario_file(
+            args.max_runs, 
+            args.initial_incumbent, 
+            param_file=pcs_files[0])
+        procs.append(SMACProcess(scenario_filename, mode,
+                                 restore_state_folder=restore_state_folder))
+
+    try:
+        for proc in procs:
+            proc.start()
+
+        for proc in procs:
+            proc.join()
+    except Exception as ex:
+        LOGGER.warning('SMAC optimization interrupted, finishing all processes')
+        for proc in procs:
+            proc.finish()
+
+    LOGGER.info('SMAC optimization finished!')

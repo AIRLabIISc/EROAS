@@ -1,0 +1,9 @@
+sonar_joint_state_controller:
+  type: "joint_state_controller/JointStateController"
+  publish_rate: 50
+  
+  # Position Controller for the Sonar Joint
+sonar_joint_position_controller:
+  type: "position_controllers/JointPositionController"
+  joint: rexrov2/sonar_vertical_joint 
+  state_publish_rate: 50

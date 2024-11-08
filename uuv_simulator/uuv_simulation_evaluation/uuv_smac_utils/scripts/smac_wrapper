@@ -1,0 +1,283 @@
+#!/usr/bin/env python
+# Copyright (c) 2016 The UUV Simulator Authors.
+# All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+import os
+import matplotlib
+if os.environ.get('DISPLAY', '') == '':
+    print('No display found, using non-interactive Agg backend')
+    matplotlib.use('Agg', force=True)
+else:
+    print('Display found=', os.environ.get('DISPLAY', ''))
+import signal
+import argparse
+import roslib
+import sys
+import numpy as np
+import logging
+import re
+import random
+import pandas as pd
+from time import sleep
+from uuv_smac_utils import OptConfiguration, start_simulation_pool, \
+    stop_simulation_pool
+
+roslib.load_manifest('uuv_smac_utils')
+
+OPT_CONFIG = OptConfiguration.get_instance('opt_config.yml')
+
+# Initializing SMAC_WRAPPER_LOGGER
+SMAC_WRAPPER_LOGGER = logging.getLogger('smac_wrapper')
+
+out_hdlr = logging.StreamHandler(sys.stdout)
+out_hdlr.setFormatter(logging.Formatter('%(asctime)s | %(levelname)s | %(module)s | %(message)s'))
+out_hdlr.setLevel(logging.INFO)
+SMAC_WRAPPER_LOGGER.addHandler(out_hdlr)
+SMAC_WRAPPER_LOGGER.setLevel(logging.INFO)
+
+if not os.path.isdir('logs'):
+    os.makedirs('logs')
+log_filename = os.path.join('logs', 'smac_wrapper.log')
+
+file_hdlr = logging.FileHandler(log_filename)
+file_hdlr.setFormatter(logging.Formatter('%(asctime)s | %(levelname)s | %(module)s | %(message)s'))
+file_hdlr.setLevel(logging.INFO)
+
+SMAC_WRAPPER_LOGGER.addHandler(file_hdlr)
+SMAC_WRAPPER_LOGGER.setLevel(logging.INFO)
+
+
+def signal_handler(signal, frame):
+    SMAC_WRAPPER_LOGGER.warning('SIGNAL RECEIVED=%d', int(signal))
+    SMAC_WRAPPER_LOGGER.warning('Killing simulation pool...')
+    stop_simulation_pool()
+    sys.exit(0)
+
+
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='SMAC wrapper')
+    # SMAC fixed positional parameters
+    #    <instance_name> <instance_specific_information> <cutoff_time> <cutoff_length> <seed>
+    parser.add_argument(
+        'instance_name',
+        help='The name of the problem instance we are executing against')
+    parser.add_argument(
+        'instance_specific_information',
+        help='An arbitrary string associated with this instance as specified in the instance file.')
+    parser.add_argument(
+        'cutoff_time', type=float,
+        help='The amount of time in seconds that the target algorithm is permitted to run.')
+    parser.add_argument(
+        'cutoff_length', type=float,
+        help='A domain specific measure of when the algorithm should consider itself done')
+    parser.add_argument(
+        'seed', type=int,
+        help='A positive integer that the algorithm should use to seed itself (for reproducibility).')
+
+    SMAC_WRAPPER_LOGGER.info('Adding parameters to the parser')
+    for param_tag in OPT_CONFIG.parameters:
+        parser.add_argument('-' + param_tag, type=float)
+        SMAC_WRAPPER_LOGGER.info('\t -' + param_tag)
+
+    args = parser.parse_args()
+
+    OPT_CONFIG.parse_input(args)
+    SMAC_WRAPPER_LOGGER.info('Input parameters=')
+    for tag in OPT_CONFIG.params:
+        SMAC_WRAPPER_LOGGER.info('\t - %s = %s' % (tag, str(OPT_CONFIG.params[tag])))
+
+    status = ''
+
+    output, failed_tasks = start_simulation_pool()
+    sleep(5)
+
+    cost = dict()
+    sim_time = dict()
+    tasks_status = dict()
+    cost_fcn_data = dict()
+
+    total_cost = 0.0
+    status = None
+
+    try:
+        if len(failed_tasks) > 0:
+            status = 'CRASHED'
+            total_cost = 1e7
+        else:            
+            for i in range(len(output)):
+                item = output[i]
+                SMAC_WRAPPER_LOGGER.info(item['task'])
+                SMAC_WRAPPER_LOGGER.info(item)
+
+                if item['status'] == 'CRASHED':
+                    continue
+
+                if status is None:
+                    status = item['status']
+
+                cost[item['task']] = item['cost']
+                sim_time[item['task']] = item['sim_time']
+                tasks_status[item['task']] = item['status']
+                cost_fcn_data[item['task']] = item['cost_function_data']
+
+            std_cost = np.std(cost.values())
+            mean_cost = np.mean(cost.values())
+            min_cost = np.min(cost.values())
+            cv = std_cost / max(np.abs(mean_cost), np.finfo(float).eps) 
+
+            SMAC_WRAPPER_LOGGER.info('Cost min={}'.format(min_cost))
+            SMAC_WRAPPER_LOGGER.info('Cost mean={}'.format(mean_cost))
+            SMAC_WRAPPER_LOGGER.info('Cost standard deviation={}'.format(std_cost))
+            SMAC_WRAPPER_LOGGER.info('Cost coefficient of variation={}'.format(cv))
+
+            # Sometimes some simulations have a initialization issue that leads the systems
+            # to oscillate. In this case, rerun them one more time to avoid large variations
+            # on the cost function vector due to simulation implementation issues
+
+            temp_cost = dict()
+            temp_sim_time = dict()
+            temp_tasks_status = dict()
+            temp_cost_fcn_data = dict()
+            for task in cost:
+                if cost[task] - min_cost > 0.33 * std_cost and cv > 1:                
+                    failed_tasks.append(task)
+                    SMAC_WRAPPER_LOGGER.warning('Cost of task {} is much higher than 0.33 * standard deviation'.format(task))
+                    SMAC_WRAPPER_LOGGER.warning('Scheduling task {} for a rerun, cost={}'.format(task, cost[task]))
+                elif cost[task] < 0.001:
+                    failed_tasks.append(task)
+                    SMAC_WRAPPER_LOGGER.warning('Cost of task {} is too low'.format(task))
+                    SMAC_WRAPPER_LOGGER.warning('Scheduling task {} for a rerun, cost={}'.format(task, cost[task]))
+                else:
+                    temp_cost[task] = cost[task]
+                    temp_sim_time[task] = sim_time[task]
+                    temp_tasks_status[task] = tasks_status[task]
+                    temp_cost_fcn_data[task] = cost_fcn_data[task]
+
+            cost = temp_cost
+            sim_time = temp_sim_time
+            tasks_status = temp_tasks_status
+            cost_fcn_data = temp_cost_fcn_data
+
+            if len(failed_tasks) > 0:
+                SMAC_WRAPPER_LOGGER.info('Rerunning tasks that cause large deviations')
+                SMAC_WRAPPER_LOGGER.info('Current task with status=SUCCESS')
+                for i in cost:
+                    SMAC_WRAPPER_LOGGER.info('\t%s - Cost=%.2f - Timeout=%.2f s' % (i, cost[i], sim_time[i]))
+                SMAC_WRAPPER_LOGGER.info('Tasks scheduled to be run again')
+                for item in failed_tasks:
+                    SMAC_WRAPPER_LOGGER.info('- ' + item)
+
+                rerun_output, rerun_failed_tasks = start_simulation_pool(1, failed_tasks)
+
+                if len(rerun_failed_tasks) > 0:
+                    SMAC_WRAPPER_LOGGER.error('Tasks crashed after rerun, setting the output status as CRASHED')
+                    SMAC_WRAPPER_LOGGER.error('Failed tasks=' + str(rerun_failed_tasks))
+                    status = 'CRASHED'
+                    total_cost = 1e7
+                else:
+                    SMAC_WRAPPER_LOGGER.info('Reruns finished successfully')
+                    for i in range(len(rerun_output)):
+                        item = rerun_output[i]
+                        SMAC_WRAPPER_LOGGER.info(item['task'])
+                        
+                        if item['status'] == 'CRASHED':
+                            continue
+
+                        if status is None:
+                            status = item['status']
+
+                        cost[item['task']] = item['cost']
+                        sim_time[item['task']] = item['sim_time']
+                        tasks_status[item['task']] = item['status']
+                        cost_fcn_data[item['task']] = item['cost_function_data']
+            
+            total_time = sum(sim_time.values())
+            total_cost = OPT_CONFIG.evaluate_tasks(cost.values())
+            SMAC_WRAPPER_LOGGER.info('Final cost: %.2f' % total_cost)
+            SMAC_WRAPPER_LOGGER.info('Task evaluation function: %s' % OPT_CONFIG.tasks_eval_fcn)
+
+            atoi = lambda a: int(a) if a.isdigit() else a
+            natural_keys = lambda text: [atoi(c) for c in re.split('(\d+)', text)]            
+            
+            for i in sorted(cost.keys(), key=natural_keys):
+                SMAC_WRAPPER_LOGGER.info('\t%s - Cost=%.2f - Timeout=%.2f s' % (i, cost[i], sim_time[i]))
+
+            # Export the information for cost computation
+            smac_it_filename = 'smac_iteration_data.json'
+
+            export_data = dict(tasks=list())
+
+            for tag in sorted(cost_fcn_data.keys(), key=natural_keys):
+                try:
+                    task_num = os.path.basename(tag).split('.')[0].split('_')[1]
+                    export_data['tasks'].append(int(task_num))
+                except:
+                    export_data['tasks'].append(os.path.basename(tag))
+                for item in cost_fcn_data[tag]:
+                    if item not in export_data:
+                        export_data[item] = list()
+                    export_data[item].append(cost_fcn_data[tag][item])
+                p = vars(args)
+                for param_tag in OPT_CONFIG.parameters:
+                    if param_tag not in export_data:
+                        export_data[param_tag] = list()
+                    export_data[param_tag].append(p[param_tag])
+
+            if os.path.isfile(smac_it_filename):
+                smac_it_dataframe = pd.read_json(smac_it_filename)
+                it_index = smac_it_dataframe['iteration'].max()
+                export_data['iteration'] = [it_index + 1 for _ in range(len(export_data['tasks']))]
+                smac_it_dataframe = pd.concat([smac_it_dataframe, pd.DataFrame.from_dict(export_data)], ignore_index=True)
+            else:
+                export_data['iteration'] = [0 for _ in range(len(export_data['tasks']))]
+                smac_it_dataframe = pd.DataFrame.from_dict(export_data)                
+            
+            smac_it_dataframe.to_json(smac_it_filename)
+
+            # Export the parameters for this iteration
+            smac_it_filename = 'smac_iteration_params.json'
+
+            export_data = dict()
+
+            p = vars(args)
+            for param_tag in OPT_CONFIG.parameters:
+                export_data[param_tag] = [p[param_tag]]
+            
+            export_data['cost'] = [total_cost]        
+
+            if os.path.isfile(smac_it_filename):
+                smac_it_dataframe = pd.read_json(smac_it_filename)
+                smac_it_dataframe = pd.concat([smac_it_dataframe, pd.DataFrame.from_dict(export_data)], ignore_index=True)
+            else:
+                smac_it_dataframe = pd.DataFrame.from_dict(export_data)
+
+            smac_it_dataframe.to_json(smac_it_filename)
+            
+    except Exception as ex:
+        template = "An exception of type {0} occurred. Arguments:\n{1!r}"
+        message = template.format(type(ex).__name__, ex.args)
+        SMAC_WRAPPER_LOGGER.error('Exception occured, message=' + message)
+        SMAC_WRAPPER_LOGGER.error('Simulation interrupted, finishing simulation pool')
+        stop_simulation_pool()
+        SMAC_WRAPPER_LOGGER.error('Simulation pool ended')
+        status = 'CRASHED'
+        total_cost = 1e7
+
+    sleep(2 * random.random())
+
+    print('Result for SMAC: %s, 0, 0, %f, %s' % (status, total_cost, args.seed))

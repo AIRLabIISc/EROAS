@@ -1,0 +1,54 @@
+<?xml version="1.0" ?>
+<sdf version="1.6" xmlns:surface_props="https://github.com/Field-Robotics-Lab/dave">
+  <world name="default">
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <gui>
+      <camera name='user_camera'>
+        <pose>3.09 1.4 2.88 0 0.75 3.1</pose>
+      </camera>
+    </gui>
+
+    <!-- basement tank -->
+    <!-- <include>
+      <uri>model://basement_tank</uri>
+      <pose>0 -3.0 0 0 0 0</pose>
+      <static>true</static>
+    </include> -->
+
+    <include>
+      <uri>model://coke_can_steel_distorted</uri>
+      <name>coke_can_steel_distorted</name>
+      <pose>2.3 1.5 2.0 0 0 0</pose>
+      <static>true</static>
+    </include>
+
+    <include>
+      <uri>model://coke_can_rubber</uri>
+      <name>coke_can_rubber</name>
+      <pose>2.1 1.5 2.0 0 0 0</pose>
+      <static>true</static>
+    </include>
+
+    <include>
+      <uri>model://coke_can_steel</uri>
+      <name>coke_can_steel</name>
+      <pose>1.9 1.5 2.0 0 0 0</pose>
+      <static>true</static>
+    </include>
+
+    <!-- Blueview P900 -->
+    <include>
+      <uri>model://oculus_m1200d_nps_multibeam_customSDFTag</uri>
+      <name>oculus_m1200d</name>
+      <pose>2.1 1.0 2.0 3.14159265359 -0.1 1.5707963268</pose>
+      <static>true</static>
+    </include>
+
+  </world>
+</sdf>

@@ -1,0 +1,120 @@
+#!/usr/bin/python
+# Copyright (c) 2016 The UUV Simulator Authors.
+# All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+from __future__ import print_function
+try:
+    import watchdog
+except Exception as ex:
+    raise ImportError('Error while importing python-watchdog, '
+                      'message=' + str(ex))
+import os
+import argparse
+import sys
+import time
+import rospy
+import logging
+import shutil
+import signal
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
+
+
+def signal_handler(signal, frame):
+    print('SIGNAL RECEIVED=%d' % int(signal))
+    print('Killing SMAC watchdog')
+    sys.exit(0)
+
+
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
+
+
+class SMACFileHandler(FileSystemEventHandler):
+    def __init__(self, input_dir, output_dir):
+        super(SMACFileHandler, self).__init__()
+        self.input_dir = input_dir
+        self.output_dir = output_dir
+
+    def on_modified(self, event):
+        print('SMAC files updated!')
+        for item in os.listdir(self.input_dir):
+            try:
+                shutil.copyfile(os.path.join(self.input_dir, item),
+                                os.path.join(self.output_dir, item))
+                print('File copied:')
+                print('\t From: ' + os.path.join(self.input_dir, item))
+                print('\t To: ' + os.path.join(self.output_dir, item))
+            except Exception as ex:
+                print('Error copying file from <%s> to <%s>, file=%s' % (self.input_dir, self.output_dir, item))
+
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Synchronize SMAC files')
+    parser.add_argument(
+        '--input_dir',
+        help='Name of the folder where the SMAC configuration folder is')
+    parser.add_argument(
+        '--output_dir',
+        help='Name of the directory where the files are going to be copied to')
+
+    logging.basicConfig(level=logging.INFO,
+                        format='%(asctime)s - %(message)s',
+                        datefmt='%Y-%m-%d %H:%M:%S')
+
+    # Parse input arguments
+    args = parser.parse_args(rospy.myargv()[1:])
+    assert os.path.isdir(args.input_dir)
+    assert len(args.output_dir) > 0, 'Output direectory string is empty'
+
+    print('Input directory=' + args.input_dir)
+    if not os.path.isdir(args.output_dir):
+        print('Output directory to be created')
+        os.makedirs(args.output_dir)
+
+    watch_filename = None
+    watch_dir = None
+    smac_output_dir = None
+    for item in os.listdir(args.input_dir):
+        if os.path.isdir(os.path.join(args.input_dir, item)) and 'smac3-output' in item:
+            full_path = os.path.join(args.input_dir, item)
+            for f in os.listdir(full_path):
+                if 'traj_aclib2.json' in os.listdir(os.path.join(full_path, f)):
+                    watch_dir = os.path.join(full_path, f)
+                    watch_filename = os.path.join(full_path, f, 'traj_aclib2.json')
+                    print('SMAC output file found, filename=' + watch_filename)
+                    smac_dump_dir = os.path.join(args.output_dir, item)
+
+                    if not os.path.isdir(smac_dump_dir):
+                        os.makedirs(smac_dump_dir)
+                    break
+        if watch_filename is not None:
+            break
+
+    assert watch_filename is not None, 'No SMAC results file found'
+
+    print('Output directory=' + smac_dump_dir)
+
+    event_handler = SMACFileHandler(watch_dir, smac_dump_dir)
+
+    observer = Observer()
+    observer.schedule(event_handler, watch_dir, recursive=True)
+    observer.start()
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        observer.stop()
+    observer.join()

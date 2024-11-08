@@ -1,0 +1,494 @@
+#!/usr/bin/env python
+# Copyright (c) 2016 The UUV Simulator Authors.
+# All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+from __future__ import print_function
+import os
+import matplotlib
+if os.environ.get('DISPLAY', '') == '':
+    print('No display found, using non-interactive Agg backend')
+    matplotlib.use('Agg', force=True)
+else:
+    print('Display found=', os.environ.get('DISPLAY', ''))
+import argparse
+import signal
+import roslib
+import pandas
+import rospy
+import sys
+import yaml
+import itertools
+import logging
+import psutil
+import shutil
+import numpy as np
+import re
+from time import sleep, gmtime, strftime
+from copy import deepcopy
+from uuv_simulation_runner import SimulationRunner
+from uuv_bag_evaluation import Evaluation
+from uuv_cost_function import CostFunction
+from uuv_smac_utils import OptConfiguration, start_simulation_pool, \
+    stop_simulation_pool
+
+
+roslib.load_manifest('uuv_simulation_wrapper')
+
+BATCH_LOGGER = logging.getLogger('run_batch')
+out_hdlr = logging.StreamHandler(sys.stdout)
+out_hdlr.setFormatter(logging.Formatter('%(asctime)s | %(levelname)s | %(module)s | %(message)s'))
+out_hdlr.setLevel(logging.INFO)
+BATCH_LOGGER.addHandler(out_hdlr)
+BATCH_LOGGER.setLevel(logging.INFO)
+
+if not os.path.isdir('logs'):
+    os.makedirs('logs')
+log_filename = os.path.join('logs', 'run_batch.log')
+
+file_hdlr = logging.FileHandler(log_filename)
+file_hdlr.setFormatter(logging.Formatter(
+    '%(asctime)s | %(levelname)s | %(module)s | %(message)s'))
+file_hdlr.setLevel(logging.INFO)
+
+BATCH_LOGGER.addHandler(file_hdlr)
+BATCH_LOGGER.setLevel(logging.INFO)
+
+TERMINATE_PROCS = False
+
+def signal_handler(signal, frame):
+    print('SIGNAL RECEIVED=' + str(signal))
+    with open('UUV_TERMINATE', 'w+') as t_file:
+        t_file.write(strftime("%Y-%m-%d_%H:%M:%S", gmtime()))
+    global TERMINATE_PROCS
+    TERMINATE_PROCS = True
+    
+
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
+
+
+def has_task_results(output_dir, task_filename):
+    results_dir = os.path.join(output_dir, 'results', task_filename.replace('.yml', ''))
+    if os.path.isdir(results_dir):
+        has_results = False
+        for item in os.listdir(results_dir):
+            if '.bag' in item or 'process_log' in item:
+                print('Folder <%s> already contains results, skipping...' % results_dir)
+                has_results = True
+        if has_results:
+            return True
+    return False
+
+
+def load_fixed_params(grid_config):
+    # Read the list of fixed parameter, if available
+    fixed_params = dict()
+    if 'fixed_params' in grid_config:
+        if isinstance(grid_config['fixed_params'], dict):
+            fixed_params = grid_config['fixed_params']
+        elif isinstance(grid_config['fixed_params'], str):
+            assert os.path.isfile(grid_config['fixed_params']), 'Invalid fixed parameters file'
+            assert '.yml' in grid_config['fixed_params'] or '.yaml' in grid_config['fixed_params']
+            with open(grid_config['fixed_params']) as fp_file:
+                fixed_params = yaml.load(fp_file)
+        else:
+            BATCH_LOGGER.error('Invalid fixed parameter list input')
+            sys.exit(0)
+    return fixed_params
+
+
+def load_cost_fcn(grid_config):
+    # Load the cost function
+    cost_function = None
+    if 'cost_fcn' in grid_config:
+        cost_function = CostFunction()
+        if isinstance(grid_config['cost_fcn'], dict):            
+            cost_function.from_dict(grid_config['cost_fcn'])
+            BATCH_LOGGER.info('Cost function loaded from list')
+        elif isinstance(grid_config['cost_fcn'], str):
+            assert os.path.isfile(grid_config['cost_fcn']), 'Invalid cost function file'
+            assert '.yml' in grid_config['cost_fcn'] or '.yaml' in grid_config['cost_fcn']
+            with open(grid_config['cost_fcn']) as cf_file:
+                cf = yaml.load(cf_file)                    
+                assert isinstance(cf, dict)
+            cost_function.from_dict(cf)
+            BATCH_LOGGER.info('Cost function loaded from file, filename=' + grid_config['cost_fcn'])
+        else:
+            BATCH_LOGGER.error('Invalid cost function input')
+            sys.exit(0)
+    if 'constraints' in grid_config:
+        if isinstance(grid_config['constraints'], dict):       
+            cost_function.add_constraints(grid_config['constraints'])
+            BATCH_LOGGER.info('Constraints loaded from list')
+        elif isinstance(grid_config['constraints'], str):       
+            assert os.path.isfile(grid_config['constraints']), 'Invalid constraints file'
+            assert '.yml' in grid_config['constraints'] or '.yaml' in grid_config['constraints']
+            with open(grid_config['constraints']) as cf_file:
+                con = yaml.load(cf_file)                    
+                assert isinstance(con, list)
+            cost_function.add_constraints(con)
+            BATCH_LOGGER.info('Constraints loaded from file, filename=' + grid_config['constraints'])
+    else:
+        BATCH_LOGGER.info('No constraints in configuration file')
+    return cost_function
+
+
+def load_grid_config(config_filename):
+    # Load optimization configuration
+    with open(args.config_file, 'r') as c_file:
+        grid_config = yaml.load(c_file)
+
+    # Generate the parameter vectors
+    assert type(grid_config) == dict, 'List of parameters must be a dictionary'
+    return grid_config
+
+
+def generate_tasks(output_dir, task_template_file, grid_config, tasks_dir):
+    # Check if the task template file is a valid file
+    assert os.path.isfile(task_template_file), 'Task file is not a valid file'
+    assert '.yml' in args.task or '.yaml' in task_template_file, 'Task file is not a YAML file'
+
+    with open(task_template_file, 'r') as task_file:
+        task_config = yaml.load(task_file)    
+    
+    # Copy the input map
+    input_map = deepcopy(grid_config['input_map'])
+
+    # Load the cost function
+    cost_function = load_cost_fcn(grid_config)
+
+    # Read the list of fixed parameter, if available
+    fixed_params = load_fixed_params(grid_config)
+
+    # In case the tasks folder is empty, create the tasks
+    if len(os.listdir(tasks_dir)) == 0:
+        use_monte_carlo = False
+        if 'use_monte_carlo' in grid_config:
+            use_monte_carlo = grid_config['use_monte_carlo']
+        params = dict()
+        for tag in grid_config['parameters']:
+            param_config = grid_config['parameters'][tag]
+            if type(param_config) == list:
+                params[tag] = param_config
+            elif not use_monte_carlo:
+                params[tag] = np.linspace(param_config['min'],
+                                          param_config['max'],
+                                          param_config['n'])
+            else:
+                params[tag] = range(param_config['n'])
+        
+        counter = 0
+        for p in itertools.product(*params.values()):
+            temp_task_file = 'task_%d' % counter
+            counter += 1
+            # Copy the input map
+            input_map = deepcopy(grid_config['input_map'])
+            for tag, item in zip(params.keys(), p):
+                for param_tag in input_map:
+                    if type(input_map[param_tag]) == list:
+                        for i in range(len(input_map[param_tag])):
+                            if input_map[param_tag][i] == tag:
+                                if type(item) == str:
+                                    input_map[param_tag][i] = item
+                                else:
+                                    input_map[param_tag][i] = float(item)
+                    else:
+                        if input_map[param_tag] == tag:
+                            if type(item) == str:
+                                input_map[param_tag] = item
+                            elif not use_monte_carlo:
+                                input_map[param_tag] = float(item)
+                            else:
+                                input_map[param_tag] = \
+                                    float(np.random.random_sample(1)[0] * \
+                                    (grid_config['parameters'][tag]['max'] - grid_config['parameters'][tag]['min']) + grid_config['parameters'][tag]['min'])
+                                item = input_map[param_tag]
+            
+            temp_task_file = temp_task_file.replace('.', '-')
+            temp_task_file = temp_task_file.replace('/', '-')
+            temp_task_file = temp_task_file.replace(':', '-')
+            temp_task_file += '.yml'            
+
+            temp_task_file_full_path = os.path.join(tasks_dir, temp_task_file)
+
+            generate_task(task_config, temp_task_file_full_path, input_map, fixed_params)            
+    else:
+        BATCH_LOGGER.info('Tasks folder is not empty, using the tasks stored...')
+
+
+def generate_task(task_template, task_filename, input_map=dict(), fixed_params=dict()):
+    temp_task = deepcopy(task_template)
+
+    # Add input map to the task file
+    for tag in input_map:
+        temp_task['execute']['params'][tag] = input_map[tag]
+    # Add fixed parameters to the task file
+    for tag in fixed_params:
+        temp_task['execute']['params'][tag] = fixed_params[tag]
+
+    if not os.path.isfile(task_filename):
+        with open(task_filename, 'w') as gs_file:
+            yaml.dump(temp_task, gs_file, default_flow_style=False)
+        BATCH_LOGGER.info('Task file created=' + os.path.basename(task_filename))
+        return True
+    else:
+        BATCH_LOGGER.info('Task file already exists=' + os.path.basename(task_filename))
+        return False    
+
+
+def run_simulations(tasks, max_num_processes, output_dir, grid_config):
+    opt_params = dict(
+        cost_fcn=grid_config['cost_fcn'],
+        max_num_processes=max_num_processes,
+        task=tasks,
+        store_all_results=True,
+        store_kpis_only=True,
+        evaluation_time_offset=0,
+        output_dir=output_dir)
+    if 'constraints' in grid_config:
+        opt_params['constraints'] = grid_config['constraints']
+    opt_config = OptConfiguration.get_instance(opt_params)
+    opt_config.params = fixed_params
+
+    failed_tasks = list()
+    output, failed_tasks = start_simulation_pool(
+        max_num_processes,
+        output_dir=output_dir)
+    return opt_config, output, failed_tasks
+
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Run batch of simulations')
+    parser.add_argument('--task', type=str, default='task.yml')
+    parser.add_argument('--output_dir', type=str, default='./results')
+    parser.add_argument('--tasks_dir', type=str)
+    parser.add_argument('--output_result_filename', type=str, default='analysis.yml')
+    parser.add_argument('--config_file', type=str, default='batch_process_config.yml')
+    parser.add_argument('--max_num_processes', type=int, default=2)        
+    parser.add_argument('--keep_result_folder', dest='delete_all', action='store_false')
+    parser.set_defaults(delete_all=True)
+
+    # Parse input arguments
+    args = parser.parse_args(rospy.myargv()[1:])
+
+    BATCH_LOGGER.info('Output directory = ' + args.output_dir)
+    if not os.path.isdir(args.output_dir):
+        os.makedirs(args.output_dir)
+        BATCH_LOGGER.info('Output directory does not exist, creating <' + args.output_dir + '>')
+
+    output_dir = os.path.abspath(args.output_dir)
+
+    BATCH_LOGGER.info('Delete results folder? ' + str(args.delete_all))
+    
+    grid_config = load_grid_config(args.config_file)
+
+    if 'input_map' in grid_config:
+        input_map = deepcopy(grid_config['input_map'])
+    else:
+        input_map = None
+
+    # Read the list of fixed parameter, if available
+    fixed_params = load_fixed_params(grid_config)
+
+    # Use the given tasks folder, if valid
+    if args.tasks_dir is None:
+        tasks_dir = os.path.join(output_dir, 'tasks')
+    else:
+        tasks_dir = args.tasks_dir
+
+    if not os.path.isdir(tasks_dir):
+        if not os.path.isdir(tasks_dir):
+            os.makedirs(tasks_dir)
+        BATCH_LOGGER.info('Task configuration directory does not exist, creating <' + tasks_dir + '>')
+
+        generate_tasks(args.output_dir, args.task, grid_config, tasks_dir)
+    
+    time_offset = 0.0
+    if 'time_offset' in grid_config:
+        time_offset = max(0.0, grid_config['time_offset'])
+
+    threads = dict()
+    output_sim_file = os.path.join(output_dir, args.output_result_filename)
+
+    # Find all tasks that have not been run yet
+    tasks = list()
+    if not os.path.isfile(output_sim_file):
+        for task in sorted(os.listdir(tasks_dir)):
+            if '.yml' in task or '.yaml' in task:
+                tasks.append(task)
+    else:
+        with open(output_sim_file) as a_file:
+            data = yaml.load(a_file)
+        finished_tasks = [data['task_file'][i] for i in data['task_file']]
+        for task in sorted(os.listdir(tasks_dir)):
+            if task in finished_tasks:
+                continue
+            tasks.append(task)   
+
+    atoi = lambda a: int(a) if a.isdigit() else a
+    natural_keys = lambda text: [atoi(c) for c in re.split('(\d+)', text)]
+
+    batch_size = 2 * args.max_num_processes
+
+    if len(tasks) == 0:
+        BATCH_LOGGER.info('No tasks to process')
+    else:
+        while len(tasks):
+            sub_set_tasks = list()
+            for i in range(batch_size):
+                if len(tasks):
+                    sub_set_tasks.append(os.path.join(tasks_dir, tasks.pop()))
+                else:
+                    break
+
+            opt_config, output, failed_tasks = run_simulations(
+                sub_set_tasks,
+                args.max_num_processes,
+                os.path.join(output_dir, 'results'),
+                grid_config)
+
+            if len(failed_tasks) > 0:
+                for item in failed_tasks:
+                    tasks.append(os.path.basename(item['task']))
+
+            for item in output:
+                sim_eval = Evaluation(
+                    item['recording_filename'],
+                    item['results_dir'],
+                    time_offset=0)
+                sim_eval.compute_kpis()
+                sim_eval.save_kpis()
+                sim_eval.save_dataframes()
+                sleep(0.1)
+
+                # Update the batch runs analysis data
+                with open(item['task'], 'r') as task_file:
+                    task_data = yaml.load(task_file)
+
+                sim_data = dict()
+
+                # Getting the variables set by the batch process from the task
+                # files
+                if input_map is not None:
+                    for tag in input_map:
+                        sim_data[tag] = [task_data['execute']['params'][tag]]
+
+                sim_data['task_file'] = [os.path.basename(item['task'])]
+
+                if opt_config.cost_fcn is not None:
+                    sim_data['cost_function'] = [float(opt_config.compute_cost_fcn(sim_eval.get_kpis()))]
+                    sim_data['constraints'] = [float(opt_config.compute_constraints(sim_eval.get_kpis()))]
+
+                # Add all KPIs to the output data
+                for tag, value in sim_eval.get_kpis().items():
+                    sim_data[tag] = [value]
+
+                index = range(len(sim_data['task_file']))
+                        
+                current_df = pandas.DataFrame(sim_data, index=index)
+                # Just copy the dictionary of current data if the file
+                # does not exist yet
+                if not os.path.isfile(output_sim_file):
+                    output_df = current_df
+                else:
+                    # Update the loaded data from past simulations
+                    with open(output_sim_file, 'r') as output_file:
+                        output_sim_data = yaml.load(output_file)
+
+                    output_df = pandas.DataFrame(output_sim_data)
+
+                    output_df = pandas.concat([output_df, current_df], ignore_index=True)
+
+                # Store and overwrite the analysis data
+                with open(output_sim_file, 'w+') as output_file:
+                    export_data = dict()
+                    pandas_data = output_df.to_dict()
+                    for tag in pandas_data:
+                        export_data[str(tag)] = dict()
+                        for i in pandas_data[tag]:
+                            if isinstance(pandas_data[tag][i], str):
+                                export_data[str(tag)][int(i)] = str(pandas_data[tag][i])
+                            else:
+                                export_data[str(tag)][int(i)] = float(pandas_data[tag][i])
+                    yaml.safe_dump(export_data, output_file, default_flow_style=False)
+
+                del sim_eval
+                
+                sleep(0.1)        
+
+            if args.delete_all:
+                BATCH_LOGGER.info('Deleting results folder')
+                if os.path.isdir(os.path.join(output_dir, 'results')):
+                    shutil.rmtree(os.path.join(output_dir, 'results'))
+                BATCH_LOGGER.info('Creating a new results folder')
+                os.makedirs(os.path.join(output_dir, 'results'))
+            else:
+                BATCH_LOGGER.info('Keeping results folder')
+
+
+    # Running the reference parameter set, if given
+    if 'reference' in grid_config:
+        BATCH_LOGGER.info('Running reference task with the parameters')
+        BATCH_LOGGER.info(str(grid_config['reference']))
+        reference_dir = os.path.join(output_dir, 'reference')
+        if not os.path.isdir(reference_dir):
+            os.makedirs(reference_dir)
+
+        with open(args.task, 'r') as task_file:
+            task_config = yaml.load(task_file)  
+
+        generate_task(
+            task_config, 
+            os.path.join(reference_dir, 'task_reference.yml'),
+            grid_config['reference'],
+            fixed_params)
+
+        if not os.path.isdir(os.path.join(reference_dir, 'results')):
+            os.makedirs(os.path.join(reference_dir, 'results'))
+
+        opt_config, output, failed_tasks = run_simulations(
+            [os.path.join(reference_dir, 'task_reference.yml')],
+            args.max_num_processes,
+            os.path.join(reference_dir, 'results'),
+            grid_config)
+
+        if len(failed_tasks):
+            BATCH_LOGGER.info('Failed to generate reference task results')    
+            shutil.rmtree(reference_dir)
+
+        for item in output:
+            sim_eval = Evaluation(
+                item['recording_filename'],
+                item['results_dir'],
+                time_offset=0)
+            sim_eval.compute_kpis()
+            sim_eval.save_kpis()
+            sim_eval.save_dataframes()
+
+        sim_data = grid_config['reference'].copy()
+        if opt_config.cost_fcn is not None:
+            sim_data['cost_function'] = [float(opt_config.compute_cost_fcn(sim_eval.get_kpis()))]
+            sim_data['constraints'] = [float(opt_config.compute_constraints(sim_eval.get_kpis()))]
+
+        sim_data['kpis'] = dict()
+        # Add all KPIs to the output data
+        for tag, value in sim_eval.get_kpis().items():
+            sim_data['kpis'][tag] = [value]
+    
+        with open(os.path.join(output_dir, 'reference_data.yml'), 'w') as r_file:
+            yaml.safe_dump(sim_data, r_file, default_flow_style=False)
+
+            
+

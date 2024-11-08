@@ -1,0 +1,667 @@
+#!/usr/bin/env python
+# Copyright (c) 2016 The UUV Simulator Authors.
+# All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+from __future__ import print_function
+import os
+import sys
+import logging
+import argparse
+import shutil
+from copy import deepcopy
+import numpy as np
+from pyquaternion import Quaternion
+import yaml
+from uuv_trajectory_generator.path_generator import PathGenerator
+from uuv_waypoints import WaypointSet, Waypoint
+import roslib
+import rospy
+from cycler import cycler
+roslib.load_manifest('uuv_simulation_evaluation')
+
+import matplotlib
+if os.environ.get('DISPLAY', '') == '':
+    print('No display found, using non-interactive Agg backend')
+    matplotlib.use('Agg')
+else:
+    print('Display found=', os.environ.get('DISPLAY', ''))
+
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+
+import seaborn
+plt.style.use('seaborn-ticks')
+plt.rcParams['legend.frameon'] = True
+
+COLORS = seaborn.color_palette('husl', 20)        
+
+plt.rcParams['axes.prop_cycle'] = cycler('color', COLORS)
+
+PLOT_CONFIGS = dict(                                    
+    figsize=[15, 12],
+    linewidth=3,
+    label_fontsize=22,
+    title_fontsize=20,
+    tick_labelsize=20,
+    xlim=None,
+    ylim=None,
+    zlim=None,                                    
+    labelpad=10,
+    legend=dict(
+        loc='upper left',
+        fontsize=22))
+
+
+SHOW_PLOTS = False
+PLOT_OUTPUT_DIR='.'
+PLOT_COUNTER=0
+#############################################################################
+# Plot methods
+#############################################################################
+
+def get_base_plot(initial_pos, yaw):
+    # Initialize the rotation matrix for the vehicle marker
+    rot = np.array([[np.cos(yaw - np.pi/2), -np.sin(yaw - np.pi/2)],
+                    [np.sin(yaw - np.pi/2), np.cos(yaw - np.pi/2)]])
+
+    # Initialize triangular marker
+    marker = np.array([[0, 0.75], [-0.5, -0.25], [0.5, -0.25]])
+    for i in range(marker.shape[0]):
+        marker[i, :] = np.dot(rot, marker[i, :])
+    marker += initial_pos[0:2]
+
+    fig = plt.figure(figsize=(PLOT_CONFIGS['figsize'][0],
+                              PLOT_CONFIGS['figsize'][1]))
+
+    ax = fig.add_subplot(111, projection='3d')
+    # ax.plot(
+    #     [marker[0, 0], marker[1, 0], marker[2, 0], marker[0, 0]],
+    #     [marker[0, 1], marker[1, 1], marker[2, 1], marker[0, 1]],
+    #     [initial_pos[2] for _ in range(4)], 
+    #     'b', 
+    #     linewidth=PLOT_CONFIGS['linewidth'])
+    ax.plot(
+        [initial_pos[0]], [initial_pos[1]], [initial_pos[2]], 
+        color='#bb3f3f',
+        marker='o', 
+        markersize=PLOT_CONFIGS['linewidth'] + 10)
+
+    ax.set_xlabel(
+        r'X [m]', 
+        fontsize=PLOT_CONFIGS['label_fontsize'], 
+        labelpad=40)
+    ax.set_ylabel(
+        r'Y [m]', 
+        fontsize=PLOT_CONFIGS['label_fontsize'], 
+        labelpad=40)
+    ax.set_zlabel(
+        r'Z [m]', 
+        fontsize=PLOT_CONFIGS['label_fontsize'], 
+        labelpad=40)
+    
+    ax.tick_params(
+        axis='x', 
+        labelsize=PLOT_CONFIGS['tick_labelsize'], 
+        pad=10)
+    ax.tick_params(
+        axis='y', 
+        labelsize=PLOT_CONFIGS['tick_labelsize'], 
+        pad=10)
+    ax.tick_params(
+        axis='z', 
+        labelsize=PLOT_CONFIGS['tick_labelsize'], 
+        pad=10)
+
+    ax.xaxis.labelpad = 40
+    ax.yaxis.labelpad = 40
+    ax.zaxis.labelpad = 40
+
+    return fig, ax
+
+
+def plot_final_path(waypoint_set, path, filename, ax):    
+    # add_waypoints_to_plot(ax, waypoint_set)
+    ax.plot(
+        [pnt.pos[0] for pnt in path],
+        [pnt.pos[1] for pnt in path],
+        [pnt.pos[2] for pnt in path],
+        linewidth=PLOT_CONFIGS['linewidth'],
+        label='Task #%d' % PLOT_COUNTER)
+    global PLOT_COUNTER
+    PLOT_COUNTER += 1
+
+
+def add_waypoints_to_plot(ax, waypoint_set):
+    for i in range(1, waypoint_set.num_waypoints):
+        last_waypoint = waypoint_set.get_waypoint(i - 1)
+        this_waypoint = waypoint_set.get_waypoint(i)
+        ax.plot(
+            [last_waypoint.x, this_waypoint.x],
+            [last_waypoint.y, this_waypoint.y],
+            [last_waypoint.z, this_waypoint.z], 
+            color='#3b5b92', 
+            linestyle='dashed',
+            linewidth=PLOT_CONFIGS['linewidth'])
+
+    waypoint = waypoint_set.get_waypoint(0)
+    ax.plot(
+        [waypoint.x],
+        [waypoint.y],
+        [waypoint.z], 
+        color='#d9544d', 
+        marker='o',
+        linewidth=PLOT_CONFIGS['linewidth'])
+    for i in range(1, waypoint_set.num_waypoints):
+        waypoint = waypoint_set.get_waypoint(i)
+        ax.plot(
+            [waypoint.x],
+            [waypoint.y],
+            [waypoint.z],             
+            color='#3b5b92',
+            marker='o',
+            linewidth=PLOT_CONFIGS['linewidth'])
+
+#############################################################################
+# Waypoint set generator methods
+#############################################################################
+
+def generate_zig_zig_sets(initial_pos, initial_yaw, config, start_motion=None, filename='plot'):
+    
+    fig, ax = get_base_plot(initial_pos, initial_yaw)
+
+    width = config['zig_zag']['width']
+    length = config['zig_zag']['length']
+
+    n_segments = config['zig_zag']['n_segments']
+
+    step = length / n_segments
+
+    sets = list()
+
+    wp_set = WaypointSet()
+    if start_motion is not None:
+        for wp in start_motion:
+            wp_set.add_waypoint(wp)
+        offset = start_motion[-1]
+    else:
+        offset = Waypoint(initial_pos[0], initial_pos[1], initial_pos[2],
+                          config['max_forward_speed'])
+
+    for i in range(n_segments):
+        pnt = np.zeros(3)
+        pnt[0] += step * (i + 1)
+        if i % 2 == 0:
+            pnt[1] -= width / 2
+        else:
+            pnt[1] += width / 2
+        waypoint = Waypoint(
+            pnt[0] + offset.x,
+            pnt[1] + offset.y,
+            pnt[2] + offset.z, config['max_forward_speed'])
+
+        wp_set.add_waypoint(waypoint)
+    
+    add_waypoints_to_plot(ax, wp_set)
+    sets.append(wp_set)
+
+    wp_set = WaypointSet()
+    if start_motion is not None:
+        for wp in start_motion:
+            wp_set.add_waypoint(wp)
+    for i in range(n_segments):
+        pnt = np.zeros(3)
+        pnt[0] += step * (i + 1)
+        if i % 2 == 0:
+            pnt[2] -= width / 2
+        else:
+            pnt[2] += width / 2
+
+        waypoint = Waypoint(
+            pnt[0] + offset.x,
+            pnt[1] + offset.y,
+            pnt[2] + offset.z, config['max_forward_speed'])
+        wp_set.add_waypoint(waypoint)
+    
+    add_waypoints_to_plot(ax, wp_set)
+    sets.append(wp_set)
+
+    plt.tight_layout()
+    fig.savefig(os.path.join(PLOT_OUTPUT_DIR, filename + '.pdf'))
+    fig.savefig(os.path.join(PLOT_OUTPUT_DIR, filename + '.png'))
+    if not SHOW_PLOTS:
+        plt.close(fig)
+
+    return sets
+
+
+def generate_straight_line_sets(initial_pos, initial_yaw, config, start_motion=None, filename='plot'):
+    center_angle = initial_yaw
+    
+    fig, ax = get_base_plot(initial_pos, initial_yaw)
+
+    rot = lambda a: np.array([
+        [np.cos(a), -np.sin(a), 0],
+        [np.sin(a), np.cos(a), 0],
+        [0, 0, 1]])
+
+    waypoint_start = Waypoint(
+        initial_pos[0], initial_pos[1], initial_pos[2],
+        config['max_forward_speed'])
+
+    sets = list()
+
+    for segments in config['straight_lines']['steps']:
+        wp_set = WaypointSet()
+        if start_motion is not None:
+            for wp in start_motion:
+                wp_set.add_waypoint(wp)
+            offset = start_motion[-1]
+        else:
+            offset = Waypoint(
+                initial_pos[0], initial_pos[1], initial_pos[2],
+                config['max_forward_speed'])
+            wp_set.add_waypoint(offset)
+
+        for s in segments:
+            target = np.array(
+                [s[0], s[1], s[2]])
+            waypoint_target = Waypoint(
+                target[0] + offset.x,
+                target[1] + offset.y,
+                target[2] + offset.z, config['max_forward_speed'])
+            wp_set.add_waypoint(waypoint_target)
+
+        sets += [wp_set]
+        
+        add_waypoints_to_plot(ax, wp_set)
+
+    plt.tight_layout()
+    fig.savefig(os.path.join(PLOT_OUTPUT_DIR, filename + '.pdf'))
+    fig.savefig(os.path.join(PLOT_OUTPUT_DIR, filename + '.png'))
+    if not SHOW_PLOTS:
+        plt.close(fig)
+
+    return sets
+
+
+def generate_curves_sets(initial_pos, initial_yaw, config, start_motion=None, filename='plot'):
+    '''Generating horizontal curves.'''
+    
+    fig, ax = get_base_plot(initial_pos, initial_yaw)
+
+    rot = lambda a: np.array([
+        [np.cos(a), -np.sin(a), 0],
+        [np.sin(a), np.cos(a), 0],
+        [0, 0, 1]])
+
+    if start_motion is not None:
+        offset = start_motion[-1]
+    else:
+        offset = Waypoint(initial_pos[0], initial_pos[1], initial_pos[2],
+                          config['max_forward_speed'])
+
+    waypoint_start = Waypoint(initial_pos[0], initial_pos[1], initial_pos[2], config['max_forward_speed'])
+
+    gen_horz = True
+    if 'horizontal' in config['curves']:
+        gen_horz = config['curves']['horizontal']
+    gen_vert = True
+    if 'vertical' in config['curves']:
+        gen_vert = config['curves']['vertical']
+
+    sets = list()
+
+    if gen_horz:
+        # Creating curve to the right
+        center = offset.pos - np.array([0, config['curves']['radius'], 0])
+        wp_set = WaypointSet()
+        if start_motion is not None:
+            for wp in start_motion:
+                wp_set.add_waypoint(wp)
+
+        for a in np.arange(0.9, -0.1, -0.1) * 2 * np.pi - 3 * np.pi / 2:
+            waypoint_target = Waypoint(
+                config['curves']['radius'] * np.cos(a) + center[0],
+                config['curves']['radius'] * np.sin(a) + center[1],
+                center[2], config['max_forward_speed'])
+            wp_set.add_waypoint(waypoint_target)
+        
+        add_waypoints_to_plot(ax, wp_set)
+        sets += [wp_set]
+
+        # Creating curve to the left
+        center = offset.pos + np.array([0, config['curves']['radius'], 0])
+        wp_set = WaypointSet()
+        if start_motion is not None:
+            for wp in start_motion:
+                wp_set.add_waypoint(wp)
+
+        for a in np.arange(0.1, 1.1, 0.1) * 2 * np.pi - np.pi / 2:
+            waypoint_target = Waypoint(
+                config['curves']['radius'] * np.cos(a) + center[0],
+                config['curves']['radius'] * np.sin(a) + center[1],
+                center[2], config['max_forward_speed'])
+            wp_set.add_waypoint(waypoint_target)
+        
+        add_waypoints_to_plot(ax, wp_set)
+        sets += [wp_set]
+
+    # Creating motion to climb and move forwards
+    if gen_vert:
+        # Creating motion to climb and move upwards
+        center = offset.pos + np.array([0, 0, config['curves']['radius']])
+        wp_set = WaypointSet()
+        if start_motion is not None:
+            for wp in start_motion:
+                wp_set.add_waypoint(wp)
+
+        for a in np.arange(0.9, -0.1, -0.1) * np.pi / 2 + np.pi / 2:
+            waypoint_target = Waypoint(
+                config['curves']['radius'] * np.sin(a) + center[0],
+                center[1],
+                config['curves']['radius'] * np.cos(a) + center[2],
+                config['max_forward_speed'])
+            wp_set.add_waypoint(waypoint_target)
+        
+        add_waypoints_to_plot(ax, wp_set)
+        sets += [wp_set]
+
+        # Creating motion to dive and move forwards
+        center = offset.pos - np.array([0, 0, config['curves']['radius']])
+        wp_set = WaypointSet()
+        if start_motion is not None:
+            for wp in start_motion:
+                wp_set.add_waypoint(wp)
+
+        for a in np.arange(0.1, 1.1, 0.1) * np.pi / 2:
+            waypoint_target = Waypoint(
+                config['curves']['radius'] * np.sin(a) + center[0],
+                center[1],
+                config['curves']['radius'] * np.cos(a) + center[2],
+                config['max_forward_speed'])
+            wp_set.add_waypoint(waypoint_target)
+        
+        add_waypoints_to_plot(ax, wp_set)
+        sets += [wp_set]
+
+    plt.tight_layout()
+    fig.savefig(os.path.join(PLOT_OUTPUT_DIR, filename + '.pdf'))
+    fig.savefig(os.path.join(PLOT_OUTPUT_DIR, filename + '.png'))
+    if not SHOW_PLOTS:
+        plt.close(fig)
+
+    return sets
+
+
+def get_max_timeout(waypoint_set, interp_method, filename='plot', ax=None):
+    for gen in PathGenerator.get_all_generators():
+        if interp_method == gen.get_label():
+            interpolator = gen
+            interpolator.init_waypoints(waypoint_set)
+            interpolator.init_interpolator()
+            plot_final_path(
+                waypoint_set, 
+                interpolator.get_samples(1, 0.001), 
+                filename=filename,
+                ax=ax)
+            return interpolator.max_time
+    return -1
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(
+        description="Generate files describing motion primitives")
+    parser.add_argument('--config_file', type=str)
+    parser.add_argument('--output_dir', type=str)
+    parser.add_argument('--task_template_file', type=str)
+    parser.add_argument('--task_dir', type=str)
+    parser.add_argument('--show_plots', type=int, default=1)
+    parser.add_argument('--plot_output_dir', type=str, default='/tmp')    
+
+    logger = logging.getLogger('generate_motion_primitives')
+    out_hdlr = logging.StreamHandler(sys.stdout)
+    out_hdlr.setFormatter(logging.Formatter(
+        '%(asctime)s | %(levelname)s | %(module)s | %(message)s'))
+    out_hdlr.setLevel(logging.INFO)
+    logger.addHandler(out_hdlr)
+    logger.setLevel(logging.INFO)
+
+    args = parser.parse_args(rospy.myargv()[1:])
+
+    assert args.config_file is not None, 'Configuration file not provided'
+    assert args.output_dir is not None, 'Output directory not provided'
+    assert os.path.isdir(args.output_dir), 'Output directory does not exist'
+    assert args.task_template_file is not None, 'Task template file is invalid'
+    assert os.path.isfile(args.task_template_file), 'Task template file is not a file'
+    assert args.task_dir is not None, 'Task directory is invalid'
+    assert os.path.isdir(args.task_dir), 'Task directory is not a folder'
+    assert os.path.isdir(args.plot_output_dir)
+
+    PLOT_OUTPUT_DIR=args.plot_output_dir
+
+    # Delete task folder and create an empty one
+    shutil.rmtree(args.task_dir)
+    os.makedirs(args.task_dir)
+
+    with open(args.config_file, 'r') as c_file:
+        config = yaml.load(c_file)
+
+    with open(args.task_template_file, 'r') as t_file:
+        task_template = yaml.load(t_file)
+
+    # Read the robot's namespace
+    namespace = config['namespace']
+    logger.info('Robot namespace=%s' % namespace)
+
+    logger.info('Show plots?=' + str(args.show_plots))
+    SHOW_PLOTS = args.show_plots
+
+    # Check if the vehicle if fully actuated
+    is_fully_actuated = config['is_fully_actuated']
+    logger.info('Is fully actuated? %s' % str(is_fully_actuated))
+
+    # Load the initial position and yaw
+    assert 'initial_pose' in config
+
+    initial_pos = np.array(
+        [config['initial_pose']['x'], config['initial_pose']['y'], config['initial_pose']['z']])
+    initial_rot = Quaternion(axis=[0, 0, 1], angle=config['initial_pose']['yaw'])
+
+    logger.info('Initial position=(%.2f, %.2f, %.2f) m' % (config['initial_pose']['x'], config['initial_pose']['y'], config['initial_pose']['z']))
+    logger.info('Initial yaw=%.2f rad' % config['initial_pose']['yaw'])
+
+    if 'start_motion' in config:
+        logger.info('Starting motion provided')
+        start_motion = list()
+        for pnt in config['start_motion']['steps']:
+            start_motion.append(
+                Waypoint(
+                    pnt[0], pnt[1], pnt[2],
+                    config['max_forward_speed']))
+    else:
+        start_motion = None
+        logger.info('No starting motion provided')
+
+    motion_files = list()
+    timeouts = list()
+
+    fig = plt.figure(figsize=(PLOT_CONFIGS['figsize'][0],
+                              PLOT_CONFIGS['figsize'][1]))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    if 'straight_lines' in config:
+        waypoint_sets = generate_straight_line_sets(
+            initial_pos, config['initial_pose']['yaw'], 
+            config, 
+            start_motion,
+            filename='straight_lines')
+
+        folder_name = os.path.join(args.output_dir, 'lines')
+
+        if os.path.isdir(folder_name):
+            shutil.rmtree(folder_name)
+
+        os.makedirs(folder_name)
+
+        if config['is_waypoint_based']:
+            for i in range(len(waypoint_sets)):
+                wp_set = deepcopy(waypoint_sets[i])
+
+                t = get_max_timeout(
+                    wp_set, 
+                    config['straight_lines']['interpolator'],
+                    filename='straight_lines_%d' % i,
+                    ax=ax)
+                timeouts.append(t)
+
+                filename = 'motion_%d.yml' % i
+                waypoint_sets[i].inertial_frame_id = config['inertial_frame_id']
+                waypoint_sets[i].export_to_file(folder_name, filename)
+                motion_files.append(os.path.join(folder_name, filename))
+
+    if 'curves' in config:
+        waypoint_sets = generate_curves_sets(
+            initial_pos, 
+            config['initial_pose']['yaw'], 
+            config, 
+            start_motion,
+            filename='curves')
+
+        folder_name = os.path.join(args.output_dir, 'curves')
+
+        if os.path.isdir(folder_name):
+            shutil.rmtree(folder_name)
+
+        os.makedirs(folder_name)
+
+        if config['is_waypoint_based']:
+            for i in range(len(waypoint_sets)):
+                wp_set = deepcopy(waypoint_sets[i])               
+
+                t = get_max_timeout(
+                    wp_set, 
+                    config['curves']['interpolator'],
+                    filename='curves_%d' % i,
+                    ax=ax)
+                timeouts.append(t)
+
+                filename = 'motion_%d.yml' % i
+                waypoint_sets[i].inertial_frame_id = config['inertial_frame_id']
+                waypoint_sets[i].export_to_file(folder_name, filename)
+                motion_files.append(os.path.join(folder_name, filename))
+
+    if 'zig_zag' in config:
+        waypoint_sets = generate_zig_zig_sets(
+            initial_pos, 
+            config['initial_pose']['yaw'], 
+            config, 
+            start_motion,
+            filename='zig_zag')
+
+        folder_name = os.path.join(args.output_dir, 'zig_zag')
+
+        if os.path.isdir(folder_name):
+            shutil.rmtree(folder_name)
+
+        os.makedirs(folder_name)
+
+        if config['is_waypoint_based']:
+            for i in range(len(waypoint_sets)):
+                wp_set = deepcopy(waypoint_sets[i])
+
+                t = get_max_timeout(
+                    wp_set, 
+                    config['zig_zag']['interpolator'],
+                    filename='zig_zag_%d' % i,
+                    ax=ax)
+                timeouts.append(t)
+
+                filename = 'motion_%d.yml' % i
+                waypoint_sets[i].inertial_frame_id = config['inertial_frame_id']
+                waypoint_sets[i].export_to_file(folder_name, filename)
+                motion_files.append(os.path.join(folder_name, filename))
+
+    ax.set_xlabel(
+        r'X [m]', 
+        fontsize=PLOT_CONFIGS['label_fontsize'], 
+        labelpad=40)
+    ax.set_ylabel(
+        r'Y [m]', 
+        fontsize=PLOT_CONFIGS['label_fontsize'], 
+        labelpad=40)
+    ax.set_zlabel(
+        r'Z [m]', 
+        fontsize=PLOT_CONFIGS['label_fontsize'], 
+        labelpad=40)
+
+    ax.tick_params(
+        axis='x', 
+        labelsize=PLOT_CONFIGS['tick_labelsize'], 
+        pad=10)
+    ax.tick_params(
+        axis='y', 
+        labelsize=PLOT_CONFIGS['tick_labelsize'], 
+        pad=10)
+    ax.tick_params(
+        axis='z', 
+        labelsize=PLOT_CONFIGS['tick_labelsize'], 
+        pad=10)
+
+    ax.xaxis.labelpad = 40
+    ax.yaxis.labelpad = 40
+    ax.zaxis.labelpad = 40
+   
+    leg = ax.legend(
+        fancybox=True, 
+        framealpha=1,         
+        loc=PLOT_CONFIGS['legend']['loc'], 
+        fontsize=PLOT_CONFIGS['legend']['fontsize'])
+
+    plt.tight_layout()
+    fig.savefig(os.path.join(PLOT_OUTPUT_DIR, 'paths.pdf'))
+    fig.savefig(os.path.join(PLOT_OUTPUT_DIR, 'paths.png'))
+    if not SHOW_PLOTS:
+        plt.close(fig)
+
+    # Generate task files
+    for i in range(len(motion_files)):
+        filename = 'task_%d.yml' % i
+        task = deepcopy(task_template)
+
+        task['execute']['params']['motion_file'] = motion_files[i]
+        task['execute']['params']['timeout'] = float(timeouts[i] + 2)
+        task['execute']['params']['x'] = float(initial_pos[0])
+        task['execute']['params']['y'] = float(initial_pos[1])
+        task['execute']['params']['z'] = float(initial_pos[2])
+        task['execute']['params']['yaw'] = float(config['initial_pose']['yaw'])
+
+        if 'options' in config:
+            for tag in config['options']:
+                task['execute']['params'][tag] = config['options'][tag]
+        if 'lines' in motion_files[i]:
+            task['execute']['params']['interpolator'] = config['straight_lines']['interpolator']
+        elif 'curves' in motion_files[i]:
+            task['execute']['params']['interpolator'] = config['curves']['interpolator']
+        elif 'zig_zag' in motion_files[i]:
+            task['execute']['params']['interpolator'] = config['zig_zag']['interpolator']
+
+        with open(os.path.join(args.task_dir, filename), 'w+') as t_file:
+            yaml.dump(task, t_file, default_flow_style=False)
+
+        logger.info('Task #%d stored=%s' % (i, os.path.join(args.task_dir, filename)))
+        print(task)
+
+    if SHOW_PLOTS:
+        logger.info('Showing plots')
+        plt.show()

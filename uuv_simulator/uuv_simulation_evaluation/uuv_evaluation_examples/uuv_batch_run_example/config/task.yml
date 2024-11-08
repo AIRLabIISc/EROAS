@@ -1,0 +1,35 @@
+execute:
+  cmd: roslaunch uuv_batch_run_example start_task.launch
+  params:
+    gui: false
+    record: true
+    bag_filename: recording.bag
+    teleop_on: false
+    # Initial position of the vehicle
+    x: 0
+    y: 0
+    z: -20
+    # Unpause the simulation after 5 seconds (computer clock time)
+    unpause_timeout: 5
+    # Simulation timeout (simulation time)
+    timeout: 110
+    # Trajectory parameters
+    radius: 8
+    center_x: 0
+    center_y: 0
+    center_z: -20
+    n_points: 50
+    n_turns: 1
+    delta_z: 4
+    duration: 100
+    max_forward_speed: 0.5
+    # Current velocity parameters
+    current_on: true
+    current_vel: 1.0
+    horizontal_angle: 0
+    # Controller parameters
+    K: 5,5,5,5,5,5
+    Kd: 4490.0,4490.0,4490.0,19541.395863200665,19541.395863200665,19541.395863200665
+    Ki: 0.1,0.1,0.1,0.47593001570009924,0.47593001570009924,0.47593001570009924
+    slope: 3.83,3.83,3.83,0.5082063866753037,0.5082063866753037,0.5082063866753037
+id: batch_run

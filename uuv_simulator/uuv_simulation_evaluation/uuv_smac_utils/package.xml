@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<package>
+  <name>uuv_smac_utils</name>
+  <version>0.5.0</version>
+  <description>Utility scripts and configuration for the SMAC optimization</description>
+
+  <maintainer email="musa.marcusso@de.bosch.com">Musa Morena Marcusso Manhaes</maintainer>
+
+  <license>Apache-2.0</license>
+
+  <author email="musa.marcusso@de.bosch.com">Musa Morena Marcusso Manhaes</author>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  
+  <build_depend>uuv_simulation_evaluation</build_depend>
+
+  <run_depend>uuv_simulation_evaluation</run_depend>
+  <run_depend>uuv_simulation_wrapper</run_depend>
+  <run_depend>roslib</run_depend>
+  <run_depend>rospy</run_depend>
+  <run_depend>python-yaml</run_depend>
+  <run_depend>python-matplotlib</run_depend>
+  <run_depend>python-simplejson</run_depend>
+  <run_depend>python-numpy</run_depend>
+
+</package>

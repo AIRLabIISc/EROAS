@@ -1,0 +1,163 @@
+
+<launch>
+    <!-- In this launch file, all necessary nodes for the simulation should be started
+         given that they all have to be terminaed together by the optimizer by the end
+         of each iteration
+    -->
+
+    <!-- Start the launch file with record:=false if it is not being used by the optimizer -->
+    <arg name="record" default="false"/>
+    <arg name="bag_filename" default="recording.bag"/>
+    <arg name="gui" default="true"/>
+    <arg name="timeout" default="60"/>
+
+    <arg name="current_on" default="true"/>
+
+    <!-- Vehicle's initial position -->
+    <arg name="x" default="0"/>
+    <arg name="y" default="0"/>
+    <arg name="z" default="-20"/>
+    <arg name="yaw" default="0"/>
+
+    <!-- Controller parameters -->
+    <arg name="Kp" default="11993.888,11993.888,11993.888,19460.069,19460.069,19460.069"/>
+    <arg name="Kd" default="9077.459,9077.459,9077.459,18880.925,18880.925,18880.925"/>
+    <arg name="Ki" default="321.417,321.417,321.417,2096.951,2096.951,2096.951"/>
+
+    <!-- Options for simulation tests, not to be used with SMAC -->
+    <arg name="teleop_on" default="false"/>
+    <arg name="joy_id" default="0"/>
+
+    <!-- Parametrization of the helical trajectory -->
+    <arg name="radius" default="4"/>
+    <arg name="center_x" default="0"/>
+    <arg name="center_y" default="0"/>
+    <arg name="center_z" default="-20"/>
+    <arg name="n_points" default="50"/>
+    <arg name="n_turns" default="1"/>
+    <arg name="delta_z" default="4.0"/>
+    <!-- Heading offset given in degrees -->
+    <arg name="heading_offset" default="0"/>
+    <arg name="duration" default="60"/>
+    <arg name="max_forward_speed" default="0.5"/>
+
+    <!-- Unpause timeout -->
+    <arg name="unpause_timeout" default="5"/>
+
+    <!-- Start the Gazebo world scenario
+         Replace this block with any Gazebo world that allows to turn off
+         the front end. If you use a world launch file that does not contain
+         the simulation timeout node, add the following to this launch file
+
+         <include file="$(find uuv_simulation_wrapper)/launch/set_simulation_timer.launch">
+            <arg name="timeout" value="$(arg timeout)"/>
+        </include>
+    -->
+    <include file="$(find uuv_descriptions)/launch/empty_underwater_world.launch">
+        <arg name="gui" value="$(arg gui)"/>
+        <arg name="paused" value="true"/>
+        <arg name="set_timeout" value="true"/>
+        <arg name="timeout" value="$(arg timeout)"/>
+    </include>
+
+    <include file="$(find uuv_simulation_wrapper)/launch/unpause_simulation.launch">
+        <arg name="timeout" value="$(arg unpause_timeout)"/>
+    </include>
+
+    <!-- Initialize the vehicle to be used
+         Use the simplified model for SMAC optimization
+    -->
+    <group if="$(arg gui)">
+      <include file="$(find rexrov2_description)/launch/upload_rexrov2.launch">
+          <arg name="x" value="$(arg x)"/>
+          <arg name="y" value="$(arg y)"/>
+          <arg name="z" value="$(arg z)"/>
+          <arg name="yaw" value="$(arg yaw)"/>
+      </include>
+    </group>
+
+    <group unless="$(arg gui)">
+      <include file="$(find rexrov2_description)/launch/upload_rexrov2.launch">
+          <arg name="x" value="$(arg x)"/>
+          <arg name="y" value="$(arg y)"/>
+          <arg name="z" value="$(arg z)"/>
+          <arg name="yaw" value="$(arg yaw)"/>
+          <arg name="use_simplified_mesh" value="true"/>
+      </include>
+    </group>
+    <!-- Start controller, in this template the controller parameters are
+         optimized
+    -->
+    <include file="$(find rexrov2_control)/launch/start_pid_controller.launch">
+        <arg name="uuv_name" value="rexrov2"/>
+        <!-- Add/edit the input parameters here -->
+        <arg name="Kp" value="$(arg Kp)"/>
+        <arg name="Kd" value="$(arg Kd)"/>
+        <arg name="Ki" value="$(arg Ki)"/>
+        <arg name="teleop_on" value="$(arg teleop_on)"/>
+        <arg name="joy_id" value="$(arg joy_id)"/>
+        <arg name="gui_on" value="$(arg gui)"/>
+    </include>
+
+    <!-- Start some trajectory or waypoint generator node -->
+    <include file="$(find uuv_control_utils)/launch/start_helical_trajectory.launch">
+        <arg name="uuv_name" value="rexrov2"/>
+        <arg name="radius" value="$(arg radius)"/>
+        <arg name="center_x" value="$(arg center_x)"/>
+        <arg name="center_y" value="$(arg center_y)"/>
+        <arg name="center_z" value="$(arg center_z)"/>
+        <arg name="n_points" value="$(arg n_points)"/>
+        <arg name="n_turns" value="$(arg n_turns)"/>
+        <arg name="delta_z" value="$(arg delta_z)"/>
+        <arg name="heading_offset" value="0"/>
+        <arg name="duration" value="$(arg duration)"/>
+        <arg name="max_forward_speed" value="$(arg max_forward_speed)"/>
+    </include>
+
+    <node pkg="uuv_control_utils"
+      type="set_gm_current_perturbation.py"
+      name="set_gm_velocity"
+      output="screen"
+      if="$(arg current_on)">
+      <rosparam subst_value="true">
+        component: velocity
+        mean: 0.4
+        min: 0.3
+        max: 0.5
+        noise: 0.005
+        mu: 0.01
+      </rosparam>
+    </node>
+
+    <node pkg="uuv_control_utils"
+      type="set_gm_current_perturbation.py"
+      name="set_gm_horz_angle"
+      output="screen"
+      if="$(arg current_on)">
+      <rosparam subst_value="true">
+        component: horz_angle
+        mean: 0.0
+        min: -5.0
+        max: 5.0
+        noise: 0.005
+        mu: 0.01
+      </rosparam>
+    </node>
+
+    <node pkg="rosbag" type="record" name="recording"
+      args="record -O $(arg bag_filename)
+        /rexrov2/dp_controller/trajectory
+        /rexrov2/dp_controller/reference
+        /rexrov2/pose_gt
+        /hydrodynamics/current_velocity
+        /rexrov2/thruster_manager/input
+        /rexrov2/wrench_perturbation
+        /rexrov2/thrusters/0/thrust
+        /rexrov2/thrusters/1/thrust
+        /rexrov2/thrusters/2/thrust
+        /rexrov2/thrusters/3/thrust
+        /rexrov2/thrusters/4/thrust
+        /rexrov2/thrusters/5/thrust"
+      if="$(arg record)"/>
+
+</launch>

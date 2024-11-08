@@ -1,0 +1,14 @@
+parameters:
+  vel:
+    min: 0.0
+    max: 0.5
+    n: 2
+  horz_angle:
+    min: -5.0
+    max: 5.0
+    n: 2
+input_map:
+  current_vel: vel
+  horizontal_angle: horz_angle
+output_dir: ../results/grid_search
+use_monte_carlo: false

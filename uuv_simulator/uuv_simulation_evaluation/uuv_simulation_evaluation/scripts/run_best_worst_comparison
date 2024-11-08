@@ -1,0 +1,814 @@
+#!/usr/bin/env python
+# Copyright (c) 2016 The UUV Simulator Authors.
+# All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+from __future__ import print_function
+import matplotlib.pyplot as plt
+import argparse
+import rospy
+import roslib
+import os
+import sys
+import shutil
+import numpy as np
+import yaml
+import logging
+import pandas
+from copy import deepcopy
+from mpl_toolkits.mplot3d import Axes3D
+from matplotlib.ticker import StrMethodFormatter
+from cycler import cycler
+from uuv_bag_evaluation import Evaluation
+from uuv_bag_evaluation.metrics import KPI
+from uuv_cost_function import CostFunction
+
+try:
+    import seaborn
+    plt.style.use('seaborn-ticks')
+    plt.rcParams['legend.frameon'] = True
+    
+    COLORS = seaborn.color_palette("muted", 20)    
+except:
+    COLORS = ['b', 'g', 'r', 'c', 'm', 'y', 'k', 'w']
+
+plt.rcParams['axes.prop_cycle'] = cycler('color', COLORS)
+
+roslib.load_manifest('uuv_simulation_evaluation')
+
+
+"""
+This script can process a batch of simulation results in the form of ROS bags
+and generate comparative plots with the best and the worst results. The folder
+structure must be set as follows
+
+- root_folder_1
+    - sim_1_folder
+        - recording.bag
+    - sim_2_folder
+        - recording.bag
+    - sim_3_folder
+        - recording.bag
+- root_folder_2
+    - sim_1_folder
+        - recording.bag
+    - sim_2_folder
+        - recording.bag
+    - sim_3_folder
+        - recording.bag
+
+This script will generate comparative plots for the results within each root_folder and amongst all root_folders
+provided.
+"""
+
+PLOT_CONFIGS = dict(                                    
+    figsize=[12, 6],
+    linewidth=3,
+    label_fontsize=22,
+    title_fontsize=20,
+    tick_labelsize=20,
+    xlim=None,
+    ylim=None,
+    zlim=None,                                    
+    labelpad=10,
+    legend=dict(
+        loc='upper right',
+        fontsize=22))
+
+
+def gen_evaluation(output_dir, bag_filename, task_filename, time_offset=0.05):
+    """Create a new evaluation object for a ROS bag."""
+    if not os.path.isdir(output_dir):
+        os.makedirs(output_dir)
+    sim_eval = Evaluation(bag_filename, output_dir, time_offset=time_offset)
+    sim_eval.save_evaluation()
+
+    if os.path.isfile(task_filename):
+        shutil.copy(task_filename, output_dir)
+
+    del sim_eval
+
+
+def gen_evaluations(bags, output_dir, time_offset=0.05):
+    """Generate evaluation instances for each ROS bag file in the bags array."""
+    sim_evals = list()
+    for bag in bags:
+        print('\tOPENING BAG: ' + bag)
+        sim_evals.append(Evaluation(bag, output_dir, time_offset=time_offset))
+    return sim_evals
+
+
+def plot_disturbance_areas(fig, ax, sim_eval, min_y, max_y):
+    """Add a colored area on the plot where current or wrench disturbances were active."""
+    t, cur_vel = sim_eval.recording.parsers['current_velocity'].current_velocity
+    if cur_vel is not None:
+        vec = np.array([np.sqrt(v[0]**2 + v[1]**2 + v[2]**2) for v in cur_vel])
+        if vec.max() > 0:
+            vec[vec > 0] = 1.05
+            ax.fill_between(t,
+                            vec * min_y,
+                            vec * max_y,
+                            facecolor='blue',
+                            alpha=0.2,
+                            label='Current activated')
+            fig.canvas.draw()
+
+    t, force, torque = sim_eval.recording.parsers['wrench_perturbation'].disturbances
+    if force is not None:        
+        vec = np.array([np.sqrt(v[0]**2 + v[1]**2 + v[2]**2) for v in force])
+        if vec.max() > 0:
+            vec[vec > 0] = 1.05
+            ax.fill_between(t,
+                            vec * min_y,
+                            vec * max_y,
+                            facecolor='red',
+                            alpha=0.2,
+                            label='Force disturbance activated')
+            fig.canvas.draw()
+
+        vec = np.array([np.sqrt(v[0]**2 + v[1]**2 + v[2]**2) for v in torque])
+        if vec.max() > 0:
+            vec[vec > 0] = 1.05
+            ax.fill_between(t,
+                            vec * min_y,
+                            vec * max_y,
+                            facecolor='green',
+                            alpha=0.2,
+                            label='Torque disturbance activated')
+            fig.canvas.draw()
+
+def plot_kpis(output_dir, bags, labels, title, filename):
+    assert len(labels) == len(bags), 'Number of labels and bags is different'
+
+
+def plot_paths(output_dir, bags, labels, title, filename):
+    """Generate path plots for the ROS bags provided"""
+    assert len(labels) == len(bags), 'Number of labels and bags is different'
+
+    fig = plt.figure(figsize=(PLOT_CONFIGS['figsize'][0],
+                              2 * PLOT_CONFIGS['figsize'][1]))
+    ax = fig.gca(projection='3d')
+
+    target_path_n = 0
+    target_path = None
+
+    min_x = None
+    max_x = None
+
+    min_y = None
+    max_y = None
+
+    min_z = None
+    max_z = None
+
+    for i in range(len(bags)):
+        sim_eval = Evaluation(bags[i], output_dir)
+
+        traj = sim_eval.recording.parsers['trajectory'].reference.points
+        if len(traj) > target_path_n:
+            target_path_n = len(traj)
+            target_path = sim_eval.recording.parsers['trajectory'].reference.points
+
+    ax.plot([d.x for d in target_path], 
+            [d.y for d in target_path], 
+            [d.z for d in target_path], 'k--',
+            label=r'Reference path',
+            linewidth=PLOT_CONFIGS['linewidth'] + 2)
+
+    fig.canvas.draw()    
+
+    for i in range(len(bags)):
+        sim_eval = Evaluation(bags[i], output_dir)        
+                
+        traj = sim_eval.recording.parsers['trajectory'].odometry.points
+        ax.plot([d.x for d in traj], 
+                [d.y for d in traj], 
+                [d.z for d in traj],
+                label=labels[i],                
+                linewidth=PLOT_CONFIGS['linewidth'])        
+
+        if min_z is None:
+            min_x = np.min([d.x for d in traj])
+            max_x = np.max([d.x for d in traj])
+
+            min_y = np.min([d.y for d in traj])
+            max_y = np.max([d.y for d in traj])
+
+            min_z = np.min([d.z for d in traj])
+            max_z = np.max([d.z for d in traj])
+        else:
+            min_x = min(np.min([d.x for d in traj]), min_x)
+            max_x = max(np.max([d.x for d in traj]), max_x)
+            
+            min_y = min(np.min([d.y for d in traj]), min_y)
+            max_y = max(np.max([d.y for d in traj]), max_y)
+            
+            min_z = min(np.min([d.z for d in traj]), min_z)
+            max_z = max(np.max([d.z for d in traj]), max_z)
+        fig.canvas.draw()    
+
+    ax.set_xlabel(
+        r'X [m]', 
+        fontsize=PLOT_CONFIGS['label_fontsize'], 
+        labelpad=40)
+    ax.set_ylabel(
+        r'Y [m]', 
+        fontsize=PLOT_CONFIGS['label_fontsize'], 
+        labelpad=40)
+    ax.set_zlabel(
+        r'Z [m]', 
+        fontsize=PLOT_CONFIGS['label_fontsize'], 
+        labelpad=40)
+
+    ax.tick_params(
+        axis='x', 
+        labelsize=PLOT_CONFIGS['tick_labelsize'], 
+        pad=10)
+    ax.tick_params(
+        axis='y', 
+        labelsize=PLOT_CONFIGS['tick_labelsize'], 
+        pad=10)
+    ax.tick_params(
+        axis='z', 
+        labelsize=PLOT_CONFIGS['tick_labelsize'], 
+        pad=10)
+
+    ax.xaxis.labelpad = 40
+    ax.yaxis.labelpad = 40
+    ax.zaxis.labelpad = 40
+
+    ax.set_xlim(min_x - 1, max_x + 1)
+    ax.set_ylim(min_y - 1, max_y + 1)
+    ax.set_zlim(min_z - 1, max_z + 1)
+
+    ax.set_title(title, fontsize=PLOT_CONFIGS['title_fontsize'])
+
+    leg = ax.legend(
+        fancybox=True, 
+        framealpha=1,         
+        loc=PLOT_CONFIGS['legend']['loc'], 
+        fontsize=PLOT_CONFIGS['legend']['fontsize'])
+    leg.get_frame().set_facecolor('white')
+    ax.grid(axis='both', alpha=0.3, linewidth=0.8)
+
+    # Invert axis if the pose of the vehicle is represented wrt NED
+    # inertial reference frame
+    if min_z >= 0 and max_z >= 0:
+        plt.gca().invert_zaxis()
+
+    ax.view_init(elev=49, azim=-38)
+
+    plt.tight_layout()
+    fig.savefig(os.path.join(output_dir, filename))
+    fig.savefig(os.path.join(output_dir, filename).replace('.pdf', '.png'))
+    plt.close(fig)
+
+
+def plot_comparison_pose_error(output_dir, bags, labels, title, filename, time_offset=0.0):
+    """Generate comparative plots for the ROS bags in the bags array regarding the position and heading errors."""
+    assert len(labels) == len(bags), 'Number of labels and bags is different'
+
+    error_tags = ['position', 'roll', 'pitch', 'yaw', 'linear_velocity']
+    axis_labels = ['Position [m]', 'Roll [rad]', 'Pitch [rad]', 'Yaw [rad]', 'Linear velocity [m/s]']
+
+    min_value = 0.0
+    max_value = 0.0    
+
+    data = None
+
+    colors = seaborn.hls_palette(len(bags))
+    for e_tag, a_tag in zip(error_tags, axis_labels):
+        temp_data = dict()
+
+        fig = plt.figure(figsize=(PLOT_CONFIGS['figsize'][0],
+                                  PLOT_CONFIGS['figsize'][1]))
+        ax = fig.gca()
+
+        min_t = None
+        max_t = None
+
+        min_value = 0.0
+        max_value = 0.0
+
+        
+        for i in range(len(bags)):
+            sim_eval = Evaluation(bags[i], output_dir, time_offset=time_offset)
+
+            t = np.array(sim_eval._error_set.get_time())
+            t_offset_idx = np.argmin(np.abs(t - time_offset))
+
+            if min_t is None:
+                min_t = np.min(t)
+                max_t = np.max(t)
+            else:
+                min_t = np.min([np.min(t), min_t])
+                max_t = np.min([np.max(t), max_t])
+
+            error = sim_eval._error_set.get_data(e_tag)
+            
+            if type(error[0]) not in [float, np.float64]:
+                error = KPI.get_error(error)
+
+            temp_data['group'] = [labels[i] for _ in range(t.size)]
+            temp_data['error'] = error
+            temp_data['t'] = t
+
+            if data is None:
+                data = pandas.DataFrame.from_dict(temp_data)
+            else:
+                data = pandas.concat([data, pandas.DataFrame.from_dict(temp_data)], ignore_index=True)
+
+            if e_tag in ['roll', 'pitch', 'yaw']:
+                min_value = - np.pi 
+                max_value = np.pi 
+            # elif e_tag in ['position']:
+            #     min_value = 0.0
+            #     max_value = 5.0
+            else:
+                min_value = np.min([np.min(error), min_value])
+                max_value = np.max([np.max(error), max_value])
+
+            # if e_tag in ['roll', 'pitch', 'yaw']:
+            #     min_value = np.min([-np.max(np.abs(error)), min_value])
+            #     max_value = np.max([np.max(np.abs(error)), max_value])
+            # else:
+            #     min_value = np.min([np.min(error), min_value])
+            #     max_value = np.max([np.max(error), max_value])
+
+            ax.plot(sim_eval._error_set.get_time(),
+                    error,
+                    linewidth=PLOT_CONFIGS['linewidth'],
+                    label=labels[i],
+                    zorder=len(bags) - i)
+            fig.canvas.draw()
+            del sim_eval
+
+        sim_eval = Evaluation(bags[0], output_dir, time_offset=time_offset)
+        plot_disturbance_areas(fig, ax, sim_eval, min_value, max_value)
+        del sim_eval
+
+        ax.set_xlabel(r'Time [s]', fontsize=PLOT_CONFIGS['label_fontsize'], labelpad=6)
+        ax.set_ylabel(r'Error - ' + a_tag, fontsize=PLOT_CONFIGS['label_fontsize'], labelpad=8)
+        leg = ax.legend(
+            fancybox=True, 
+            framealpha=1, 
+            loc=PLOT_CONFIGS['legend']['loc'], 
+            fontsize=PLOT_CONFIGS['legend']['fontsize'])
+        leg.get_frame().set_facecolor('white')
+
+        ax.grid(axis='both', alpha=0.3, linewidth=0.8)
+
+        ax.tick_params(
+            axis='both',
+            labelsize=PLOT_CONFIGS['tick_labelsize'])
+
+        ax.set_xlim(min_t, max_t)
+        ax.set_ylim(min_value, max_value)
+
+        ax.set_xticklabels([r'${:>5.2f}$'.format(float(s)) for s in ax.get_xticks()])
+        ax.set_yticklabels([r'${:>5.2f}$'.format(float(s)) for s in ax.get_yticks()])
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, e_tag + '_' + filename))
+        plt.savefig(os.path.join(output_dir, e_tag + '_' + filename).replace('.pdf', '.png'))
+        plt.close(fig)
+
+        del fig
+
+        fig = plt.figure(figsize=(PLOT_CONFIGS['figsize'][0],
+                                  len(labels)))
+        ax = fig.gca()
+        ax = seaborn.barplot(x='error', y='group', data=data)
+ 
+        ax.set_xlabel('Error - ' + a_tag, fontsize=PLOT_CONFIGS['label_fontsize'])
+        ax.set(ylabel='')
+        ax.grid(True)
+        ax.tick_params(axis='both',
+                       labelsize=PLOT_CONFIGS['tick_labelsize'],
+                       pad=5)
+                   
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, e_tag + '_bar_plot_' + filename))
+        plt.savefig(os.path.join(output_dir, e_tag + '_bar_plot_' + filename).replace('.pdf', '.png'))
+        plt.close(fig)
+
+        del fig
+
+        fig = plt.figure(figsize=(PLOT_CONFIGS['figsize'][0],
+                                  len(labels)))
+        ax = fig.gca()
+        ax = seaborn.boxplot(x='error', y='group', data=data, showfliers=False)
+ 
+        ax.set_xlabel('Error - ' + a_tag, fontsize=PLOT_CONFIGS['label_fontsize'])
+        ax.set(ylabel='')
+        ax.grid(True)
+        ax.tick_params(axis='both',
+                       labelsize=PLOT_CONFIGS['tick_labelsize'],
+                       pad=5)
+                   
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, e_tag + '_box_plot_' + filename))
+        plt.savefig(os.path.join(output_dir, e_tag + '_box_plot_' + filename).replace('.pdf', '.png'))
+        plt.close(fig)
+
+        del fig
+
+        fig = plt.figure(figsize=(PLOT_CONFIGS['figsize'][0],
+                                  len(labels)))
+        ax = fig.gca()
+        ax = seaborn.stripplot(x='error', y='group', data=data)
+ 
+        ax.set_xlabel('Error - ' + a_tag, fontsize=PLOT_CONFIGS['label_fontsize'])
+        ax.set(ylabel='')
+        ax.grid(True)
+        ax.tick_params(axis='both',
+                       labelsize=PLOT_CONFIGS['tick_labelsize'],
+                       pad=5)
+                   
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, e_tag + '_strip_plot_' + filename))
+        plt.savefig(os.path.join(output_dir, e_tag + '_strip_plot_' + filename).replace('.pdf', '.png'))
+        plt.close(fig)
+
+        del fig
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Run best and worst results')
+
+    parser.add_argument('--input_dir', type=str, default='./results', nargs='+', help='Input directory with all the processed tasks')
+    parser.add_argument('--input_dir_labels', type=str, default='', nargs='+', help='Labels for each input directories')
+    parser.add_argument('--output_dir', type=str, default='.', help='Output folder for plots and analysis data')
+    parser.add_argument('--config_file', type=str, help='Output configuration file')
+    parser.add_argument('--best_results_dir', type=str, default='', help='Output directory for the best results')
+    parser.add_argument('--time_offset', type=float, default=0.0)
+
+    # Parse input arguments
+    args = parser.parse_args(rospy.myargv()[1:])
+
+    time_offset = max(args.time_offset, 0.0)
+
+    for d in args.input_dir:
+        assert os.path.isdir(d), 'Invalid input directory, dir=' + str(d)
+    assert os.path.isdir(args.output_dir), 'Invalid output directory'
+    assert os.path.isfile(args.config_file), 'Invalid configuration file'
+    assert len(args.input_dir) == len(args.input_dir_labels), 'Labels list not matching the input directories'
+
+    # Setup logging
+    logger = logging.getLogger('run_best_worst')
+    out_hdlr = logging.StreamHandler(sys.stdout)
+    out_hdlr.setFormatter(logging.Formatter('%(asctime)s | %(levelname)s | %(module)s | %(message)s'))
+    out_hdlr.setLevel(logging.INFO)
+    logger.addHandler(out_hdlr)
+    logger.setLevel(logging.INFO)
+
+    logger.info('Processing the following folders')
+    for d in args.input_dir:
+        print('\t - ' + d)
+
+    with open(args.config_file, 'r') as c_file:
+        config_file = yaml.load(c_file)
+    logger.info('Configuration file loaded <%s>' % args.config_file)
+
+    if 'cost_fcn' in config_file:
+        if isinstance(config_file['cost_fcn'], str):
+            logger.info('Cost function file=' + str(config_file['cost_fcn']))
+            assert os.path.isfile(config_file['cost_fcn'])
+            with open(config_file['cost_fcn']) as f:
+                cost_fcn = yaml.load(f)
+        elif isinstance(config_file['cost_fcn'], dict):
+            cost_fcn = config_file['cost_fcn']
+            logger.info('Custom cost function provided:')
+        for tag in cost_fcn:
+            logger.info('\t- %s: %.4f' % (tag, cost_fcn[tag]))
+    else:
+        cost_fcn = None
+
+    if 'constraints' in config_file:
+        if isinstance(config_file['constraints'], str):
+            assert os.path.isfile(config_file['constraints'])
+            with open(config_file['constraints']) as f:
+                constraints = yaml.load(f)
+        elif isinstance(config_file['constraints'], dict):
+            constraints = config_file['constraints']
+            logger.info('Custom constraints provided:')
+        for c in constraints:
+            logger.info('\t%s' % str(c))
+    else:
+        cost_fcn = None
+
+    output_dir = os.path.join(args.output_dir, 'best_worst_analysis')
+
+    if not os.path.isdir(output_dir):
+        logger.info('Creating output directory <%s>' % output_dir)
+        os.makedirs(output_dir)
+    else:
+        logger.info('Output directory already exists <%s>' % output_dir)
+
+    logger.info('Storing this analysis parameters in the output directory')
+    with open(os.path.join(output_dir, 'analysis_configuration.yaml'), 'w') as p_file:
+        yaml.safe_dump(vars(args), p_file, default_flow_style=False)
+
+    tasks = dict()
+    kpis = dict()
+    tasks_cost_fcn = dict()
+
+    logger.info('Reading the simulation results...')
+    n_tasks = 0
+    for d, label in zip(args.input_dir, args.input_dir_labels):
+        logger.info('Processing directory = ' + d)
+        logger.info('Directory label = ' + label)
+        tasks[d] = list()
+        kpis[d] = list()
+        tasks_cost_fcn[d] = list()
+        for item in sorted(os.listdir(d)):
+            p = os.path.join(d, item)
+            if os.path.isdir(p):
+                if 'recording.bag' not in os.listdir(p):
+                    logger.info('ROS bag not found')
+                    continue
+                cur_kpi = None
+                
+                if 'computed_kpis.yaml' not in os.listdir(p):
+                    logger.info('KPIs are not yet available')
+                    logger.info('Computing KPIs')
+                    sim_eval = Evaluation(os.path.join(p, 'recording.bag', time_offset=time_offset), p)
+                    sim_eval.save_kpis()
+                    del sim_eval
+                for f in os.listdir(p):
+                    if 'computed_kpis' in f:
+                        kpi_filename = os.path.join(p, f)
+
+                        with open(kpi_filename, 'r') as k_file:
+                            cur_kpi = yaml.load(k_file)
+
+                        if cost_fcn is not None:
+                            cf = CostFunction()
+                            cf.from_dict(cost_fcn)
+                            if 'constraints' in config_file:
+                                cf.add_constraints(constraints)
+                            cf.set_kpis(cur_kpi)
+                            cost = cf.compute()
+                            tasks_cost_fcn[d].append(cost)
+
+                        for tag in config_file['kpis']:
+                            if 'factor' in config_file['kpis'][tag]:
+                                cur_kpi[tag] *= config_file['kpis'][tag]['factor']
+                
+                if cur_kpi is not None:
+                    n_tasks += 1
+                    kpis[d].append(cur_kpi)
+                    tasks[d].append(p)
+
+    logger.info('Finished loading tasks!')
+    logger.info('Total number of tasks=%d' % n_tasks)
+
+    best_kpis_idx = list()
+    best_kpis_label = list()
+    best_kpis_values = dict()
+
+    # Store the evaluations for the best and worst using the KPIs in
+    # the configuration file
+    print(kpis)
+    for tag in config_file['kpis']:
+        kpi = dict()
+        min_idx = dict()
+        max_idx = dict()
+
+        kpi_bags = list()
+        kpi_labels = list()
+
+        worst_kpi_bags = list()
+        worst_kpi_labels = list()
+
+        counter = 0
+        for d, i in zip(args.input_dir, range(len(args.input_dir))):
+            kpi[d] = [kpis[d][k][tag] for k in range(len(kpis[d]))]
+            print(kpi[d])
+            min_idx[d] = np.argmin(kpi[d])
+            max_idx[d] = np.argmax(kpi[d])
+
+            root_path = os.path.join(output_dir, tag, '%d_%s' % (i, args.input_dir_labels[i]))
+            best_root_path = os.path.join(args.best_results_dir, tag, '%d_%s' % (i, args.input_dir_labels[i]))
+
+            logger.info('KPI = %s' % tag)
+            logger.info('\tDirectory = ' + d)
+            logger.info('\tLabel = ' + args.input_dir_labels[i])
+            logger.info('\tStoring the KPIs and plots for the best candidate')
+            logger.info('\t%s = %.4f' % (tag, kpis[d][min_idx[d]][tag]))
+
+            gen_evaluation(os.path.join(root_path, 'best'),
+                           os.path.join(tasks[d][min_idx[d]], 'recording.bag'),
+                           os.path.join(tasks[d][min_idx[d]], 'task.yml'),
+                           time_offset=time_offset)
+
+            if os.path.isdir(args.best_results_dir):
+                if not os.path.isdir(best_root_path):
+                    os.makedirs(best_root_path)
+                shutil.copy(os.path.join(tasks[d][min_idx[d]], 'recording.bag'),
+                            best_root_path)
+                shutil.copy(os.path.join(tasks[d][min_idx[d]], 'task.yml'),
+                            best_root_path)
+
+                with open(os.path.join(best_root_path, 'metric.yaml'), 'w') as m_file:
+                    metric = dict()
+                    metric[tag] = kpis[d][min_idx[d]][tag]
+                    yaml.dump(metric, m_file, default_flow_style=False)
+
+                gen_evaluation(best_root_path,
+                               os.path.join(best_root_path, 'recording.bag'),
+                               os.path.join(tasks[d][min_idx[d]], 'task.yml'),
+                               time_offset=time_offset)
+
+            logger.info('KPI = %s' % tag)
+            logger.info('\tDirectory = ' + d)
+            logger.info('\tLabel = ' + args.input_dir_labels[i])
+            logger.info('\tStoring the KPIs and plots for the worst candidate')
+            logger.info('\t%s = %.4f' % (tag, kpis[d][max_idx[d]][tag]))
+
+            gen_evaluation(os.path.join(root_path, 'worst'),
+                           os.path.join(tasks[d][max_idx[d]], 'recording.bag'),
+                           os.path.join(tasks[d][max_idx[d]], 'task.yml'),
+                           time_offset=time_offset)
+
+            bags = [os.path.join(tasks[d][min_idx[d]], 'recording.bag'),
+                    os.path.join(tasks[d][max_idx[d]], 'recording.bag')]
+
+            kpi_bags.append(os.path.join(tasks[d][min_idx[d]], 'recording.bag'))
+            worst_kpi_bags.append(os.path.join(tasks[d][max_idx[d]], 'recording.bag'))
+
+            labels = ['Best simulation scenario [Metric = %.4f]' % kpis[d][min_idx[d]][tag],
+                      'Worst simulation scenario [Metric = %.4f]' % kpis[d][max_idx[d]][tag]]
+
+            kpi_labels.append(args.input_dir_labels[i])
+            worst_kpi_labels.append(args.input_dir_labels[i])
+
+            plot_comparison_pose_error(output_dir=root_path,
+                                       bags=bags,
+                                       labels=labels,
+                                       title=r'%s - %s [%s]' % (config_file['kpis'][tag]['title'], config_file['kpis'][tag]['var'], config_file['kpis'][tag]['unit']),
+                                       filename='error_comparison_%s.pdf' % tag,
+                                       time_offset=time_offset)
+
+            plot_paths(output_dir=root_path,
+                       bags=bags,
+                       labels=labels,
+                       title=r'',
+                       filename='paths_comparison_%s.pdf' % tag)
+
+        plot_comparison_pose_error(output_dir=os.path.join(output_dir, tag),
+                                   bags=kpi_bags,
+                                   labels=kpi_labels,
+                                   title=r'%s - %s [%s]' % (config_file['kpis'][tag]['title'], config_file['kpis'][tag]['var'], config_file['kpis'][tag]['unit']),
+                                   filename='best_cases_error_comparison.pdf',
+                                   time_offset=time_offset)
+
+        plot_paths(output_dir=os.path.join(output_dir, tag),
+                   bags=kpi_bags,
+                   labels=kpi_labels,
+                   title=r'',
+                   filename='paths_comparison.pdf')
+
+        plot_comparison_pose_error(output_dir=os.path.join(output_dir, tag),
+                                   bags=worst_kpi_bags,
+                                   labels=worst_kpi_labels,
+                                   title=r'%s - %s [%s]' % (config_file['kpis'][tag]['title'], config_file['kpis'][tag]['var'], config_file['kpis'][tag]['unit']),
+                                   filename='worst_cases_error_comparison.pdf',
+                                   time_offset=time_offset)
+
+        plot_paths(output_dir=os.path.join(output_dir, tag),
+                   bags=worst_kpi_bags,
+                   labels=worst_kpi_labels,
+                   title=r'',
+                   filename='worst_cases_paths_comparison.pdf')
+
+    if cost_fcn is not None:
+        logger.info('Plotting cost function results')
+        cost_fcn_min_idx = dict()
+        cost_fcn_max_idx = dict()
+
+        cost_fcn_bags = list()
+        cost_fcn_labels = list()
+
+        worst_cost_fcn_bags = list()
+        worst_cost_fcn_labels = list()
+
+        tag = 'cost_fcn'
+        for d, i in zip(args.input_dir, range(len(args.input_dir))):
+            # If a custom cost function is available, compute the best and worst
+            # candidates according to the cost function
+
+            logger.info('Calculating the best and worst candidates according to the cost function')
+
+            cost_fcn_min_idx[d] = np.argmin(tasks_cost_fcn[d])
+            cost_fcn_max_idx[d] = np.argmax(tasks_cost_fcn[d])
+
+            root_path = os.path.join(output_dir, tag, '%d_%s' % (i, args.input_dir_labels[i]))
+            best_root_path = os.path.join(output_dir, tag, '%d_%s' % (i, args.input_dir_labels[i]))
+
+            if not os.path.isdir(root_path):
+                os.makedirs(root_path)
+
+            logger.info('Cost function configuration copied to <%s>' % root_path)
+
+            logger.info('\tStoring the KPIs and plots for the best candidate according to the cost function')
+            logger.info('\t%s = %.4f' % (tag, tasks_cost_fcn[d][cost_fcn_min_idx[d]]))
+
+            gen_evaluation(os.path.join(root_path, 'best'),
+                           os.path.join(tasks[d][cost_fcn_min_idx[d]], 'recording.bag'),
+                           os.path.join(tasks[d][cost_fcn_min_idx[d]], 'task.yml'),
+                           time_offset=time_offset)
+
+            if not os.path.isdir(best_root_path):
+                os.makedirs(best_root_path)
+            shutil.copy(os.path.join(tasks[d][cost_fcn_min_idx[d]], 'recording.bag'),
+                        best_root_path)
+
+            output_cost_fcn = dict(fcn=cost_fcn)
+            output_cost_fcn['value'] = tasks_cost_fcn[d][cost_fcn_min_idx[d]]
+            with open(os.path.join(best_root_path, 'cost_fcn.yaml'), 'w') as c_file:
+                yaml.dump(output_cost_fcn, c_file, default_flow_style=False)
+
+            if 'parameters' in config_file:
+                with open(os.path.join(tasks[d][cost_fcn_min_idx[d]], 'task.yml'), 'r') as t_file:
+                    task = yaml.load(t_file)
+                params = dict()
+                for p in config_file['parameters']:
+                    params[p] = task[p]
+                with open(os.path.join(best_root_path, 'params.yaml'), 'w') as p_file:
+                    yaml.dump(params, p_file, default_flow_style=False)
+
+            gen_evaluation(best_root_path,
+                           os.path.join(best_root_path, 'recording.bag'),
+                           os.path.join(tasks[d][cost_fcn_min_idx[d]], 'task.yml'),
+                           time_offset=time_offset)
+
+
+            logger.info('\tStoring the KPIs and plots for the worst candidate according to the cost function')
+            logger.info('\t%s = %.4f' % (tag, tasks_cost_fcn[d][cost_fcn_max_idx[d]]))
+
+            gen_evaluation(os.path.join(root_path, 'worst'),
+                           os.path.join(tasks[d][cost_fcn_max_idx[d]], 'recording.bag'),
+                           os.path.join(tasks[d][cost_fcn_max_idx[d]], 'task.yml'),
+                           time_offset=time_offset)
+
+            bags = [os.path.join(tasks[d][cost_fcn_min_idx[d]], 'recording.bag'),
+                    os.path.join(tasks[d][cost_fcn_max_idx[d]], 'recording.bag')]
+
+            cost_fcn_bags.append(os.path.join(tasks[d][cost_fcn_min_idx[d]], 'recording.bag'))
+            worst_cost_fcn_bags.append(os.path.join(tasks[d][cost_fcn_max_idx[d]], 'recording.bag'))
+
+            labels = ['Best parameter set [Cost function = %.4f]' % tasks_cost_fcn[d][cost_fcn_min_idx[d]],
+                      'Worst parameter set [Cost function = %.4f]' % tasks_cost_fcn[d][cost_fcn_max_idx[d]]]
+
+            cost_fcn_labels.append(r'%s' % args.input_dir_labels[i])
+            worst_cost_fcn_labels.append(r'%s' % args.input_dir_labels[i])
+
+            plot_comparison_pose_error(output_dir=root_path,
+                                       bags=bags,
+                                       labels=labels,
+                                       title='Position and heading errors',
+                                       filename='best_cases_error_comparison_%s.pdf' % tag,
+                                       time_offset=time_offset)
+
+            plot_paths(output_dir=root_path,
+                       bags=bags,
+                       labels=labels,
+                       title='',
+                       filename='best_cases_paths_comparison_%s.pdf' % tag)
+
+        plot_comparison_pose_error(output_dir=os.path.join(output_dir, tag),
+                                   bags=cost_fcn_bags,
+                                   labels=cost_fcn_labels,
+                                   title='Position and heading errors',
+                                   filename='best_cases_error_comparison.pdf',
+                                   time_offset=time_offset)
+
+        plot_paths(output_dir=os.path.join(output_dir, tag),
+                   bags=cost_fcn_bags,
+                   labels=cost_fcn_labels,
+                   title='',
+                   filename='best_cases_paths_comparison.pdf')
+
+        plot_comparison_pose_error(output_dir=os.path.join(output_dir, tag),
+                                   bags=worst_cost_fcn_bags,
+                                   labels=worst_cost_fcn_labels,
+                                   title='Position and heading errors',
+                                   filename='worst_cases_error_comparison.pdf',
+                                   time_offset=time_offset)
+
+        plot_paths(output_dir=os.path.join(output_dir, tag),
+                   bags=worst_cost_fcn_bags,
+                   labels=worst_cost_fcn_labels,
+                   title='',
+                   filename='worst_cases_paths_comparison.pdf')

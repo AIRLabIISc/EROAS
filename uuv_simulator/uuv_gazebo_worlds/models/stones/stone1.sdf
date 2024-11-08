@@ -1,0 +1,27 @@
+<sdf version="1.4">
+  <model name="stone1">
+    <link name="link">
+      <collision name="collision">
+        <geometry>
+          <mesh>
+            <uri>model://stone1.dae</uri>
+          </mesh>
+        </geometry>
+      </collision>
+      <visual name="visual">
+        <geometry>
+          <mesh>
+            <uri>model://stone1.dae</uri> <!-- Corrected this line -->
+          </mesh>
+        </geometry>
+        <material>
+          <script>
+            <uri>file://media/materials/scripts/gazebo.material</uri>
+            <name>Gazebo/Stone</name>
+          </script>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>
+zzz

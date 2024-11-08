@@ -1,0 +1,18 @@
+execute:
+  cmd: roslaunch uuv_simulation_runner_example start_simulation.launch
+  # The parameters below are named as in the input arguments of the launch
+  # file. List below all parameters that you wish to override from default
+  # values set in the launch file.
+  # IMPORTANT: Do not add below the parameters that you wish to vary in your
+  # script/optimizer/client. They will be given to the simulation wrapper
+  # in the Python script as an input
+  params:
+    # Gazebo client and RViz are not initialized when running the iterations
+    # using the simulation wrapper
+    gui: false
+    timeout: 70
+    # Recording the simulation is necessary for the evaluation step later
+    record: true
+    bag_filename: recording.bag
+    current_on: true
+id: tutorial_simulation_runner

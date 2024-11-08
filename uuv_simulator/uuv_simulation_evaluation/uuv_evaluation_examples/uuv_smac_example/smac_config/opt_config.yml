@@ -1,0 +1,71 @@
+cost_fcn:
+  max_abs_thrust: 0.0
+  max_error_angle: 0.0
+  max_error_angular_velocity: 10.0
+  max_error_linear_velocity: 10.0
+  max_error_pitch: 0.0
+  max_error_position: 0.0
+  max_error_roll: 0.0
+  max_error_x: 0.0
+  max_error_y: 0.0
+  max_error_yaw: 0.0
+  max_error_z: 0.0
+  mean_abs_thrust: 0.0
+  mean_error_angle: 0.0
+  mean_error_angular_velocity: 0.0
+  mean_error_linear_velocity: 0.0
+  mean_error_pitch: 0.0
+  mean_error_position: 0.0
+  mean_error_roll: 0.0
+  mean_error_x: 0.0
+  mean_error_y: 0.0
+  mean_error_yaw: 0.0
+  mean_error_z: 0.0
+  rmse_angle: 0.0
+  rmse_angular_velocity: 0.0
+  rmse_linear_velocity: 0.0
+  rmse_x: 0.0
+  rmse_y: 0.0
+  rmse_z: 0.0
+  # 1 / 1 rad
+  rmse_pitch: 57.295777937
+  # 1 / 0.01 m
+  rmse_position: 100.0
+  # 1 / 1 rad
+  rmse_roll: 57.295777937
+  # 1 / 1 rad
+  rmse_yaw: 57.295777937
+input_map:
+  Kd:
+  - Kd_lin
+  - Kd_lin
+  - Kd_lin
+  - Kd_ang
+  - Kd_ang
+  - Kd_ang
+  Ki:
+  - Ki_lin
+  - Ki_lin
+  - Ki_lin
+  - Ki_ang
+  - Ki_ang
+  - Ki_ang
+  Kp:
+  - Kp_lin
+  - Kp_lin
+  - Kp_lin
+  - Kp_ang
+  - Kp_ang
+  - Kp_ang
+output_dir: /tmp/results_uuv_smac_example
+parameters:
+- Kd_lin
+- Kd_ang
+- Ki_lin
+- Ki_ang
+- Kp_lin
+- Kp_ang
+store_all_results: false
+store_kpis_only: true
+task: task.yml
+evaluation_time_offset: 5

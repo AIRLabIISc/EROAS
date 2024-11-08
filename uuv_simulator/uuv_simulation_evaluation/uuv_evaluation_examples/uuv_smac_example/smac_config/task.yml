@@ -1,0 +1,35 @@
+execute:
+  cmd: roslaunch uuv_smac_example start_smac_task.launch
+  params:
+    # Set gui: true to open the Gazebo client and RViz at each iteration
+    gui: false
+    # Recording is necessary for the evaluation of the simulation KPIs
+    record: true
+    bag_filename: recording.bag
+    teleop_on: false
+    # Initial position of the vehicle
+    x: 0
+    y: 0
+    z: -20
+    # Unpause the simulation after 5 seconds (computer clock time)
+    # This is necessary because the Gazebo server can take a while to start
+    # and therefore not all services or topics are available. If you want to
+    # start all nodes in one launch file, it is good to wait for the Gazebo
+    # simulation to be initialized
+    unpause_timeout: 5
+    # Simulation timeout (simulation time)
+    timeout: 60
+    # Trajectory parameters (in this case, a helical trajectory)
+    radius: 4
+    center_x: 0
+    center_y: 0
+    center_z: -20
+    n_points: 50
+    n_turns: 1
+    delta_z: 4
+    duration: 60
+    max_forward_speed: 0.5
+    # Current velocity parameters
+    current_on: true
+
+id: smac_config

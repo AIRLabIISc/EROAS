@@ -1,0 +1,72 @@
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Changelog for package uuv_simulation_runner_example
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+0.5.0 (2018-08-01)
+------------------
+
+0.4.3 (2018-07-31)
+------------------
+
+0.4.2 (2018-07-30)
+------------------
+
+0.4.1 (2018-07-27)
+------------------
+
+0.4.0 (2018-07-25)
+------------------
+
+0.3.4 (2018-07-23)
+------------------
+
+0.3.3 (2018-07-23)
+------------------
+
+0.3.2 (2018-07-23)
+------------------
+
+0.3.1 (2018-07-19)
+------------------
+
+0.3.0 (2018-07-17)
+------------------
+
+0.2.8 (2018-07-16)
+------------------
+
+0.2.7 (2018-07-16)
+------------------
+
+0.2.6 (2018-07-16)
+------------------
+
+0.2.5 (2018-07-11)
+------------------
+
+0.2.4 (2018-07-11)
+------------------
+
+0.2.3 (2018-07-11)
+------------------
+
+0.2.2 (2018-07-09)
+------------------
+
+0.2.1 (2018-07-07)
+------------------
+
+0.2.0 (2018-07-06)
+------------------
+* FIX Software version numbering
+  Signed-off-by: Musa Morena Marcusso Manhaes <Musa.Marcusso@de.bosch.com>
+* Contributors: Musa Morena Marcusso Manhaes
+
+0.1.5 (2018-06-06)
+------------------
+* FIX Setting process timeout in simulation runner
+  Signed-off-by: Musa Morena Marcusso Manhaes <Musa.Marcusso@de.bosch.com>
+* FIX Typo in comment
+  Signed-off-by: Musa Morena Marcusso Manhaes <Musa.Marcusso@de.bosch.com>
+* ADD Simulation runner example
+* Contributors: Musa Morena Marcusso Manhaes

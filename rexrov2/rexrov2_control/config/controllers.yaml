@@ -1,0 +1,18 @@
+# joint_controllers.yaml
+
+# Joint Trajectory Controller
+sonar_joint_trajectory_controller:
+  type: "trajectory_controller/JointTrajectoryController"
+  joints:
+    - rexrov2/sonar_vertical_joint
+  trajectory:
+    # Control parameters
+    gains:
+      sonar_vertical_joint:
+        p: 100.0
+        i: 0.01
+        d: 0.0
+        i_clamp: 1.0
+  state_publish_rate: 50
+  action_ns: /sonar_joint_trajectory_controller
+

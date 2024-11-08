@@ -1,0 +1,102 @@
+<launch>
+    <arg name="record" default="false" doc="Set this flag to true to call record.launch"/>
+    <arg name="bag_filename" default="recording.bag" doc="Name of the output ROS bag file in case record is set to true"/>
+    <arg name="use_ned_frame" default="false" doc="If true, uses the NED (North-East-Down) frame conversion. If false, ENU (East-North-Up) will be used per default."/>
+
+    <!-- Vehicle's initial position  in world A-->
+    <!-- <arg name="x" default="29" doc="X coordinate of the vehicle's initial position (in ENU)"/>
+    <arg name="y" default="33" doc="Y coordinate of the vehicle's initial position (in ENU)"/>
+    <arg name="z" default="-54" doc="Z coordinate of the vehicle's initial position (in ENU)"/>
+    <arg name="yaw" default="2.82" doc="Yaw angle of the vehicle's initial orientation"/> -->
+
+     <!-- Vehicle's initial position  in coral-->
+    <!-- <arg name="x" default="23" doc="X coordinate of the vehicle's initial position (in ENU)"/>
+    <arg name="y" default="-24" doc="Y coordinate of the vehicle's initial position (in ENU)"/>
+    <arg name="z" default="-54" doc="Z coordinate of the vehicle's initial position (in ENU)"/>
+    <arg name="yaw" default="1.66" doc="Yaw angle of the vehicle's initial orientation"/> -->
+
+
+    <!-- Vehicles intial position in world B -->
+    <arg name="x" default="25" doc="X coordinate of the vehicle's initial position (in ENU)"/>
+    <arg name="y" default="-35" doc="Y coordinate of the vehicle's initial position (in ENU)"/>
+    <arg name="z" default="-47" doc="Z coordinate of the vehicle's initial position (in ENU)"/>
+    <arg name="yaw" default="2.27" doc="Yaw angle of the vehicle's initial orientation"/>
+
+    <arg name="teleop_on" default="false" doc="If true, the teleop node will be started"/>
+    <arg name="joy_id" default="0" doc="Joystick ID"/>
+    
+    <arg name="namespace" default="rexrov2" doc="Namespace to spawn the vehicle"/>
+
+    <include file="$(find uuv_gazebo_worlds)/launch/ocean_waves.launch"/>
+
+    <include file="$(find uuv_simulation_wrapper)/launch/unpause_simulation.launch">
+        <arg name="timeout" value="5"/>
+    </include>
+
+    <arg name="sonar_name" value="blueview_p900"/>
+    <arg name="sonar_image_topic" value="sonar_image"/>
+
+    <include file="$(find rexrov2_description)/launch/upload_rexrov2.launch">
+        <arg name="x" value="$(arg x)"/>
+        <arg name="y" value="$(arg y)"/>
+        <arg name="z" value="$(arg z)"/>
+        <arg name="yaw" value="$(arg yaw)"/>
+        <arg name="use_ned_frame" value="$(arg use_ned_frame)"/>
+        
+        
+         <!-- For Multibeam Sonar -->
+        <arg name="sonar_name" value="$(arg sonar_name)"/>
+        <arg name="gpu_ray" value="true"/>
+        <arg name="maxDistance" value="15"/>
+        <!-- fidelity is only for gpu_ray == true -->
+        <!-- fidelity is limited by GPU RAM size and maxDistance-->
+        <arg name="fidelity" default="500"/>
+        <arg name="raySkips" value="10"/>
+        <arg name="sonar_image_topic" value="$(arg sonar_image_topic)"/>
+        <arg name="sonar_image_raw_topic" value="sonar_image_raw"/>
+        <arg name="plotScaler" value="1"/>
+        <arg name="sensorGain" value="0.04"/>
+        <arg name="ray_visual" value="true"/>
+        <arg name="writeLog" value="true"/>
+        <arg name="writeFrameInterval" value="5"/>
+        
+        
+    </include>
+
+    <include file="$(find rexrov2_control)/launch/start_pid_controller.launch">
+        <arg name="teleop_on" value="$(arg teleop_on)"/>
+        <arg name="joy_id" value="$(arg joy_id)"/>
+        <arg name="use_ned_frame" value="$(arg use_ned_frame)"/>
+        
+       
+    </include>
+
+    
+        <!-- Start the sonar_heading_node -->
+    <node pkg="navigator_auv" type="only_gap.py" name="sonar_heading_node" output="screen" />
+        <!-- Start the sonar_heading_node -->
+    <node pkg="navigator_auv" type="velocity_cbf.py" name="ObstacleAvoidanceNode" output="screen" />
+
+    
+
+    
+    
+    
+    
+    <!-- image_view for sonar image -->
+    <node name="image_view_sonar" pkg="image_view" type="image_view"
+          args="image:=/$(arg namespace)/$(arg sonar_name)/$(arg sonar_image_topic)">
+      <param name="window_name" value="/$(arg namespace)/$(arg sonar_name)/$(arg sonar_image_topic)" />
+      <param name="autosize" value="true" />
+      <param name="filename_format" value="/tmp/SonarImage_capture_%04i.jpg" />
+    </node>
+    
+    <node pkg="tf" type="static_transform_publisher" name="multibeam_sonar_base_link"
+          args="0 0 0 0 0 0 world $(arg namespace)/$(arg sonar_name)_forward_sonar_optical_link 50" />
+
+  
+    <include file="$(find rexrov2_gazebo)/launch/record.launch">
+      <arg name="record" value="$(arg record)"/>
+      <arg name="bag_filename" value="$(arg bag_filename)"/>
+    </include>
+</launch>
