@@ -7,7 +7,7 @@ Refer to submitted paper - ([paper_url](https://arxiv.org/abs/2411.05516))
 
 1. **Create a ROS Workspace**
    - Clone this repository into the `src` folder of your ROS workspace.
-   - The UUV_simulator in this repo is a modified version of [UUV Simulator](https://github.com/uuvsimulator/uuv_simulator) which has new worlds, amd works for ROS, Ubuntu 20.04
+   - The UUV_simulator in this repo is a modified version of [UUV Simulator](https://github.com/uuvsimulator/uuv_simulator) which has new worlds, and works for ROS, Ubuntu 20.04
    - Clone the Dave Simulator and the sonar plugin into the `src` folder as well.
 
 2. **Install Dave Simulator**
