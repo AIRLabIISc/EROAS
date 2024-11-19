@@ -1,7 +1,7 @@
 # EROAS
 3D obstacle avoidance for AUV using 2.5D Forward Looking Sonar (Submitted to ICRA 2024) 
 
-Refer to submitted paper - ([paper_url](https://arxiv.org/abs/2411.05516))
+Refer to submitted paper - ([Paper](https://arxiv.org/abs/2411.05516))
 
 ## Setup Instructions
 
