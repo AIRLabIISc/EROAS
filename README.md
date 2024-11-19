@@ -122,5 +122,18 @@ Refer to submitted paper - ([paper_url](https://arxiv.org/abs/2411.05516))
      ```
 
    - Edit line **59** (`self.waypoints`) to set your desired waypoints.
+  
+8. **Additional Tools**
+   - The repository also contains a lot of useful code, such as:
+     - **Location Spawners**
+     - **Pose Data/Image Savers**
+     - **Plotters**
+     - **Point Cloud Generators**
+     - **Sonar Motion Generator**
+     - **Detection Modules**
+     - **Topic Rate Modifier**
+
+   - These tools can be utilized for various tasks such as data collection, visualization, and enhancing the simulation environment.
+
 
 
