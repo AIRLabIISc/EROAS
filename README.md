@@ -11,7 +11,8 @@ https://github.com/user-attachments/assets/0b70529d-3543-488e-9d04-d4fe210640c7
 
 
 
-Refer to submitted paper - ([Paper](https://arxiv.org/abs/2411.05516))
+Refer to submitted paper - ([Paper](https://arxiv.org/abs/2411.05516)) 
+Supplementary video link - [View Video](https://drive.google.com/file/d/1nbZf67-v7306LD2ovHOIaSrAEnh6DH3P/view?usp=sharing)
 
 ## Setup Instructions
 
