@@ -143,9 +143,9 @@ Refer to submitted paper - [Paper](https://arxiv.org/abs/2411.05516)
      - **Detection Modules**
      - **Topic Rate Modifier**
 
-⭐ If you find this project helpful, please consider giving it a star! ⭐
+
 
    - These tools can be utilized for various tasks such as data collection, visualization, and enhancing the simulation environment.
 
 
-
+⭐ If you find this project helpful, please consider giving it a star! ⭐
